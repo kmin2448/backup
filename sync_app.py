@@ -38,9 +38,12 @@ MUTED = "#5C5F66"       # 보조 텍스트 (읽기 충분한 회색)
 BORDER = "#D7D9DE"      # 카드/입력 테두리
 PRIMARY = "#F47216"     # 주요 동작(오렌지)
 PRIMARY_HOVER = "#DE6510"
+DANGER = "#E5484D"      # 멈추기(빨강)
+DANGER_HOVER = "#CF3B40"
 BTN = "#ECEDF0"         # 보조 버튼 배경
 BTN_HOVER = "#DEE0E6"
 DISABLED = "#B9BBC2"
+DISABLED_BG = "#ECECEF"
 
 # 폰트 (Pretendard, 없으면 시스템 기본 폰트로 대체됨). 본문 16pt.
 FONT_FAMILY = "Pretendard"
@@ -138,14 +141,19 @@ def validate_pair(src, dst):
 
 
 class SyncPlan:
-    """소스/대상을 비교해서 해야 할 작업 목록을 만든다."""
+    """소스/대상을 비교해서 해야 할 작업 목록을 만든다.
 
-    def __init__(self, src, dst):
+    overwrite=True  : 동일 파일명이 있을 때 용량/수정일자가 다르면 덮어쓰기
+    overwrite=False : 동일 파일명이 있으면 무조건 건너뛰기
+    """
+
+    def __init__(self, src, dst, overwrite=True):
         self.src = src
         self.dst = dst
+        self.overwrite = overwrite
         self.to_copy = []        # 새로 추가된 파일
         self.to_update = []      # 변경되어 덮어쓸 파일
-        self.to_skip = []        # 동일해서 건너뛸 파일
+        self.to_skip = []        # 동일/건너뛸 파일
         self.to_delete = []      # 대상에만 있어 삭제할 파일
         self.dirs_to_delete = []  # 대상에만 있어 삭제할 폴더
 
@@ -158,6 +166,9 @@ class SyncPlan:
             d = os.path.join(self.dst, rel)
             if rel not in dst_files:
                 self.to_copy.append(rel)
+            elif not self.overwrite:
+                # 동일 파일명 → 무조건 건너뛰기
+                self.to_skip.append(rel)
             elif files_identical(s, d):
                 self.to_skip.append(rel)
             else:
@@ -234,6 +245,8 @@ class App:
 
         self.delete_var = tk.BooleanVar(value=cfg.get("delete_enabled", True))
         self.confirm_delete_var = tk.BooleanVar(value=cfg.get("confirm_delete", True))
+        # 동일 파일명 처리: "skip" = 무조건 건너뛰기, "diff" = 다르면 덮어쓰기
+        self.conflict_mode = tk.StringVar(value=cfg.get("conflict_mode", "diff"))
         self.src_input = tk.StringVar()
         self.dst_input = tk.StringVar()
 
@@ -245,12 +258,14 @@ class App:
         self._last_daily_run_day = None
 
         self.busy = False
+        self._cancel = threading.Event()   # 멈추기 요청
         self.log_queue = queue.Queue()
         self._ui_queue = queue.Queue()
 
         self.status_var = tk.StringVar(value="대기 중")
         self.count_var = tk.StringVar(value="동기화 폴더 0개")
         self.sched_status_var = tk.StringVar(value="")
+        self.progress_var = tk.StringVar(value="")   # 진행률 % + 남은 시간
 
         self._setup_fonts()
         self._setup_style()
@@ -336,12 +351,15 @@ class App:
         inner.pack(fill="both", expand=True, padx=1, pady=1)
         return inner
 
-    def _button(self, parent, text, command, tooltip="", primary=False):
-        bg = PRIMARY if primary else BTN
-        fg = "white" if primary else TEXT
-        hover = PRIMARY_HOVER if primary else BTN_HOVER
+    def _button(self, parent, text, command, tooltip="", primary=False, danger=False):
+        if danger:
+            bg, fg, hover = DANGER, "white", DANGER_HOVER
+        elif primary:
+            bg, fg, hover = PRIMARY, "white", PRIMARY_HOVER
+        else:
+            bg, fg, hover = BTN, TEXT, BTN_HOVER
         b = tk.Button(parent, text=text, command=command,
-                      font=self.font_b if primary else self.font_n,
+                      font=self.font_b if (primary or danger) else self.font_n,
                       bg=bg, fg=fg, activebackground=hover, activeforeground=fg,
                       disabledforeground=DISABLED, relief="flat", bd=0,
                       padx=16, pady=9, cursor="hand2",
@@ -373,6 +391,13 @@ class App:
                               bg=CARD, fg=TEXT, activebackground=CARD,
                               activeforeground=TEXT, selectcolor=CARD,
                               highlightthickness=0, bd=0, cursor="hand2")
+
+    def _mode_radio(self, parent, text, value):
+        return tk.Radiobutton(parent, text=text, variable=self.conflict_mode,
+                              value=value, command=self._persist, font=self.font_n,
+                              bg=CARD, fg=TEXT, activebackground=CARD,
+                              activeforeground=TEXT, selectcolor=CARD,
+                              highlightthickness=0, bd=0, cursor="hand2", anchor="w")
 
     def _label(self, parent, text, font=None, fg=TEXT, bg=CARD):
         return tk.Label(parent, text=text, font=font or self.font_n, fg=fg, bg=bg)
@@ -452,8 +477,14 @@ class App:
 
         # 옵션 카드
         c = self._card(main)
+        self._label(c, "같은 이름의 파일이 대상에 있을 때",
+                    font=self.font_small, fg=MUTED).pack(anchor="w", padx=10, pady=(10, 2))
+        self._mode_radio(c, "무조건 건너뛰기", "skip").pack(anchor="w", padx=10)
+        self._mode_radio(c, "파일 용량 또는 수정일자가 다르면 덮어쓰기", "diff").pack(
+            anchor="w", padx=10, pady=(0, 6))
+        tk.Frame(c, bg=BORDER, height=1).pack(fill="x", padx=10, pady=2)
         self._check(c, "원본에서 삭제된 파일을 대상에서도 삭제",
-                    self.delete_var).pack(anchor="w", padx=10, pady=(10, 2))
+                    self.delete_var).pack(anchor="w", padx=10, pady=(6, 2))
         self._check(c, "삭제 전 확인 (켜면 삭제 직전에 한 번 물어봅니다)",
                     self.confirm_delete_var).pack(anchor="w", padx=10, pady=(2, 10))
 
@@ -474,21 +505,28 @@ class App:
 
         # 실행 버튼
         af = tk.Frame(main, bg=BG)
-        af.pack(fill="x", pady=(0, 12))
+        af.pack(fill="x", pady=(0, 10))
         self.preview_btn = self._button(
             af, "미리보기", self.preview,
             "실제 복사·삭제 없이 변경될 파일만 먼저 확인합니다")
         self.preview_btn.pack(side="left")
+        self.stop_btn = self._button(
+            af, "멈추기", self.stop_sync,
+            "진행 중인 동기화를 중지합니다", danger=True)
+        self.stop_btn.configure(state="disabled", bg=DISABLED_BG)
+        self.stop_btn.pack(side="right")
         self.sync_btn = self._button(
             af, "전체 동기화 시작", self.start_sync,
             "목록의 모든 폴더를 동기화합니다 (추가·변경 복사, 삭제 반영)",
             primary=True)
-        self.sync_btn.pack(side="left", padx=(10, 0), fill="x", expand=True)
+        self.sync_btn.pack(side="left", padx=(10, 8), fill="x", expand=True)
 
-        # 진행 표시줄
+        # 진행 표시줄 + 퍼센트/남은 시간
         self.progress = ttk.Progressbar(main, mode="determinate",
                                         style="Sync.Horizontal.TProgressbar")
-        self.progress.pack(fill="x", pady=(0, 10))
+        self.progress.pack(fill="x", pady=(0, 2))
+        tk.Label(main, textvariable=self.progress_var, font=self.font_small,
+                 fg=TEXT, bg=BG, anchor="w").pack(fill="x", pady=(0, 8))
 
         # 로그 카드
         c = self._card(main, pady=(0, 8))
@@ -582,6 +620,7 @@ class App:
             "pairs": [list(p) for p in self.pairs],
             "delete_enabled": self.delete_var.get(),
             "confirm_delete": self.confirm_delete_var.get(),
+            "conflict_mode": self.conflict_mode.get(),
             "sched_enabled": self.sched_enabled.get(),
             "sched_mode": self.sched_mode.get(),
             "sched_time": self.sched_time.get().strip(),
@@ -689,16 +728,20 @@ class App:
         pairs = self._valid_pairs()
         if pairs is None:
             return
+        self.busy = True
+        self._cancel.clear()
+        overwrite = self.conflict_mode.get() == "diff"
+        self.progress_var.set("")
         self.set_status("변경사항 분석 중...")
         self._set_buttons(False)
-        threading.Thread(target=self._preview_worker, args=(pairs,),
+        threading.Thread(target=self._preview_worker, args=(pairs, overwrite),
                          daemon=True).start()
 
-    def _preview_worker(self, pairs):
+    def _preview_worker(self, pairs, overwrite):
         try:
             tot_copy = tot_update = tot_skip = tot_delete = 0
             for src, dst in pairs:
-                plan = SyncPlan(src, dst)
+                plan = SyncPlan(src, dst, overwrite)
                 plan.build()
                 tot_copy += len(plan.to_copy)
                 tot_update += len(plan.to_update)
@@ -718,6 +761,7 @@ class App:
                          f"건너뜀 {tot_skip} / 삭제 {tot_delete}")
             self.set_status("미리보기 완료")
         finally:
+            self.busy = False
             self._set_buttons(True)
 
     # ---------------- 동기화 ----------------
@@ -734,20 +778,22 @@ class App:
                 messagebox.showwarning("경고", "동기화할 유효한 폴더 쌍이 없습니다.")
             return
         self.busy = True
+        self._cancel.clear()
         self.set_status("변경사항 분석 중...")
-        self._set_buttons(False)
+        self._set_buttons(False, allow_stop=True)
         delete_enabled = self.delete_var.get()
         confirm_delete = self.confirm_delete_var.get()
+        overwrite = self.conflict_mode.get() == "diff"
         threading.Thread(target=self._sync_worker,
-                         args=(pairs, delete_enabled, confirm_delete),
+                         args=(pairs, delete_enabled, confirm_delete, overwrite),
                          daemon=True).start()
 
-    def _sync_worker(self, pairs, delete_enabled, confirm_delete):
+    def _sync_worker(self, pairs, delete_enabled, confirm_delete, overwrite):
         try:
             plans = []
             for src, dst in pairs:
                 os.makedirs(dst, exist_ok=True)
-                plan = SyncPlan(src, dst)
+                plan = SyncPlan(src, dst, overwrite)
                 plan.build()
                 plans.append(plan)
 
@@ -771,9 +817,14 @@ class App:
 
             done = 0
             copied = updated = deleted = errors = 0
+            cancelled = False
 
+            # 3) 추가 + 변경 복사
             for plan in plans:
                 for rel in plan.to_copy + plan.to_update:
+                    if self._cancel.is_set():
+                        cancelled = True
+                        break
                     s = os.path.join(plan.src, rel)
                     d = os.path.join(plan.dst, rel)
                     is_add = rel in plan.to_copy
@@ -790,11 +841,17 @@ class App:
                         self.log_msg(f"[오류] 복사 실패 {rel}: {e}")
                         errors += 1
                     done += 1
-                    self._set_progress(done)
+                    self._emit_progress(done)
+                if cancelled:
+                    break
 
-            if do_delete:
+            # 4) 삭제
+            if do_delete and not cancelled:
                 for plan in plans:
                     for rel in plan.to_delete:
+                        if self._cancel.is_set():
+                            cancelled = True
+                            break
                         d = os.path.join(plan.dst, rel)
                         try:
                             os.remove(d)
@@ -804,7 +861,9 @@ class App:
                             self.log_msg(f"[오류] 삭제 실패 {rel}: {e}")
                             errors += 1
                         done += 1
-                        self._set_progress(done)
+                        self._emit_progress(done)
+                    if cancelled:
+                        break
                     for rel in plan.dirs_to_delete:
                         d = os.path.join(plan.dst, rel)
                         try:
@@ -813,21 +872,30 @@ class App:
                                 self.log_msg(f"[폴더삭제] {rel}")
                         except Exception:
                             pass
-            elif all_deletes:
+            elif all_deletes and not do_delete:
                 self.log_msg(f"삭제 건너뜀 - {len(all_deletes)}개 파일은 "
                              "대상에 그대로 둡니다.")
 
+            self._emit_progress(done, force=True)
             self.log_msg("")
-            self.log_msg(f"===== 완료 ({datetime.now():%Y-%m-%d %H:%M:%S}) =====")
-            self.log_msg(f"추가 {copied} / 변경 {updated} / 건너뜀 {tot_skip} / "
-                         f"삭제 {deleted} / 오류 {errors}")
-            self.set_status(
-                f"완료: 추가 {copied}, 변경 {updated}, 삭제 {deleted}, 오류 {errors}")
+            if cancelled:
+                self.log_msg(f"===== 중지됨 ({datetime.now():%Y-%m-%d %H:%M:%S}) =====")
+                self.log_msg(f"추가 {copied} / 변경 {updated} / 삭제 {deleted} / "
+                             f"오류 {errors} (사용자가 중지)")
+                self.set_status(
+                    f"중지됨: 추가 {copied}, 변경 {updated}, 삭제 {deleted}")
+            else:
+                self.log_msg(f"===== 완료 ({datetime.now():%Y-%m-%d %H:%M:%S}) =====")
+                self.log_msg(f"추가 {copied} / 변경 {updated} / 건너뜀 {tot_skip} / "
+                             f"삭제 {deleted} / 오류 {errors}")
+                self.set_status(
+                    f"완료: 추가 {copied}, 변경 {updated}, 삭제 {deleted}, 오류 {errors}")
         except Exception as e:
             self.log_msg(f"[치명적 오류] {e}")
             self.set_status("오류로 중단됨")
         finally:
             self.busy = False
+            self._cancel.clear()
             self._set_buttons(True)
 
     def _ask_delete(self, to_delete):
@@ -846,8 +914,14 @@ class App:
         event.wait()
         return result["ok"]
 
+    # ---------------- 멈추기 ----------------
+    def stop_sync(self):
+        if self.busy:
+            self._cancel.set()
+            self.set_status("중지 요청됨... 현재 파일을 마무리하는 중입니다")
+
     # ---------------- UI 상태 (메인 스레드에서 실행) ----------------
-    def _set_buttons(self, enabled):
+    def _set_buttons(self, enabled, allow_stop=False):
         def apply():
             st = "normal" if enabled else "disabled"
             self.sync_btn.configure(state=st)
@@ -855,13 +929,45 @@ class App:
             if enabled:
                 self.sync_btn.configure(bg=self.sync_btn._bg)
                 self.preview_btn.configure(bg=self.preview_btn._bg)
+            # 멈추기 버튼은 동기화가 실제로 진행 중일 때만 활성화
+            self.stop_btn.configure(
+                state="normal" if allow_stop else "disabled",
+                bg=self.stop_btn._bg if allow_stop else DISABLED_BG)
         self._ui(apply)
 
-    def _set_progress_max(self, total):
-        self._ui(lambda: self.progress.configure(maximum=max(total, 1), value=0))
+    @staticmethod
+    def _fmt_eta(seconds):
+        seconds = int(seconds)
+        if seconds < 60:
+            return f"{seconds}초"
+        if seconds < 3600:
+            return f"{seconds // 60}분 {seconds % 60}초"
+        return f"{seconds // 3600}시간 {(seconds % 3600) // 60}분"
 
-    def _set_progress(self, value):
-        self._ui(lambda: self.progress.configure(value=value))
+    def _set_progress_max(self, total):
+        self._total = max(total, 1)
+        self._start_time = time.time()
+        self._last_emit = 0.0
+        self._ui(lambda: (self.progress.configure(maximum=self._total, value=0),
+                          self.progress_var.set("0%")))
+
+    def _emit_progress(self, done, force=False):
+        now = time.time()
+        if not force and now - getattr(self, "_last_emit", 0) < 0.12:
+            return
+        self._last_emit = now
+        total = getattr(self, "_total", 1)
+        pct = int(done * 100 / total) if total else 100
+        elapsed = now - getattr(self, "_start_time", now)
+        if 0 < done < total and elapsed > 0.5:
+            eta = elapsed / done * (total - done)
+            text = f"{pct}%   ·   남은 시간 약 {self._fmt_eta(eta)}   ({done}/{total})"
+        elif done >= total:
+            text = f"100%   ·   완료   ({total}/{total})"
+        else:
+            text = f"{pct}%   ({done}/{total})"
+        self._ui(lambda: (self.progress.configure(value=done),
+                          self.progress_var.set(text)))
 
 
 def main():
