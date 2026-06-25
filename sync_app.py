@@ -32,20 +32,23 @@ import customtkinter as ctk
 # 설정 파일 (등록한 폴더 쌍과 옵션을 기억)
 CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".folder_sync_config.json")
 
-# ----- 색상 테마 (뉴모피즘 / Soft UI · 민트 + 딥그린) -----
-BG = "#E8EEE9"          # 연한 민트빛 오프화이트 (앱 배경)
-CARD = "#F1F6F1"        # 살짝 밝게 떠 있는 카드
-CARD2 = "#E4ECE5"       # 보조 버튼 톤
-INSET = "#DEE7E0"       # 안으로 들어간 느낌의 입력칸/리스트/트로프
-SHADOW = "#CBD7CD"      # 부드러운 그림자(테두리 근사)
-HILIGHT = "#FBFEFB"     # 밝은 하이라이트(테두리 근사)
-TEAL = "#2D6A5A"        # 포인트 딥그린/청록
-TEAL_DARK = "#235447"   # 진한 청록 (메인 버튼 hover)
+# ----- 색상 테마 (중립 회색 + 청록 포인트, 미니멀) -----
+BG = "#EAEAEA"          # 중립 옅은 회색 (녹색 끼 없음)
+CARD = "#F2F2F2"        # 배경과 거의 같은 톤 + 부드러운 경계로 떠 보이게
+CARD2 = "#E6E6E6"       # 일반 버튼 바탕(옅은 회색)
+INSET = "#E2E2E2"       # 안으로 들어간 입력칸/리스트/로그
+SHADOW = "#D4D4D4"      # 부드러운 그림자 근사(경계)
+HILIGHT = "#FAFAFA"     # 밝은 하이라이트(경계)
+TEAL = "#2D6A5A"        # 포인트 딥그린/청록 (글씨·테두리·아이콘에만)
+TEAL_DARK = "#235447"
 TEAL_SOFT = "#3E8473"   # 연한 청록
-TEXT = "#284A40"        # 본문 (딥그린 계열)
-MUTED = "#5E7269"       # 보조 텍스트
-BTN_HOVER = "#D6E1D8"   # 보조 버튼 hover
-STOP_HOVER = "#DCE7DE"  # 멈추기(외곽선) hover
+TEXT = "#2D6A5A"        # 라벨·제목 = 청록
+MUTED = "#6E7C77"       # 보조 텍스트(차분한 회녹)
+LOG_TEXT = "#33403B"    # 입력칸/로그 본문(가독성용 진회색)
+PRIMARY_FILL = "#DBE9E3"  # 강조 버튼: 연한 청록 바탕
+PRIMARY_HOVER = "#CDE0D8"
+BTN_HOVER = "#DCDCDC"     # 일반 버튼 hover
+STOP_HOVER = "#E0E0E0"    # 멈추기(외곽선) hover
 
 # 폰트: 깔끔하게 보이도록 OS 기본 산세리프 사용 (Windows=맑은 고딕)
 if sys.platform == "win32":
@@ -344,7 +347,7 @@ class App:
             pass
         rowh = self.tree_font.metrics("linespace") + 14
         style.configure("Sync.Treeview", background=INSET, fieldbackground=INSET,
-                        foreground=TEXT, borderwidth=0, relief="flat",
+                        foreground=LOG_TEXT, borderwidth=0, relief="flat",
                         rowheight=rowh, font=self.font_n)
         style.map("Sync.Treeview", background=[("selected", TEAL)],
                   foreground=[("selected", "#FFFFFF")])
@@ -354,24 +357,28 @@ class App:
 
     # ---------------- 위젯 헬퍼 (customtkinter, 뉴모피즘) ----------------
     def _card(self, parent, pady=(0, 7)):
+        # 배경과 거의 같은 톤 + 옅은 경계선으로 부드럽게 떠 있는 느낌을 근사
         card = ctk.CTkFrame(parent, fg_color=CARD, corner_radius=16,
-                            border_width=1, border_color=HILIGHT)
+                            border_width=1, border_color="#E0E0E0")
         card.pack(fill="x", pady=pady)
         return card
 
     def _button(self, parent, text, command, tooltip="", primary=False,
                 danger=False, width=110):
         if danger:
-            # 멈추기: 외곽선만 청록(메인과 같은 계열, 명도만 구분)
+            # 멈추기: 외곽선만 청록(연한 톤)
             opts = dict(fg_color="transparent", hover_color=STOP_HOVER,
-                        text_color=TEAL, border_width=2, border_color=TEAL,
+                        text_color=TEAL_SOFT, border_width=2, border_color=TEAL_SOFT,
                         text_color_disabled=MUTED)
         elif primary:
-            opts = dict(fg_color=TEAL, hover_color=TEAL_DARK,
-                        text_color="#FFFFFF", text_color_disabled="#CFE0DA")
-        else:
-            opts = dict(fg_color=CARD2, hover_color=BTN_HOVER, text_color=TEAL,
+            # 강조: 연한 청록 바탕 + 청록 글씨/테두리 (큰 청록 면 아님)
+            opts = dict(fg_color=PRIMARY_FILL, hover_color=PRIMARY_HOVER,
+                        text_color=TEAL, border_width=1, border_color=TEAL,
                         text_color_disabled=MUTED)
+        else:
+            # 일반: 옅은 회색 바탕 + 청록 글씨
+            opts = dict(fg_color=CARD2, hover_color=BTN_HOVER, text_color=TEAL,
+                        border_width=1, border_color=SHADOW, text_color_disabled=MUTED)
         b = ctk.CTkButton(parent, text=text, command=command, width=width, height=30,
                           corner_radius=11,
                           font=self.font_b if (primary or danger) else self.font_n,
@@ -383,7 +390,7 @@ class App:
     def _entry(self, parent, var, width=140):
         return ctk.CTkEntry(parent, textvariable=var, width=width, height=30,
                             corner_radius=10, font=self.font_n, fg_color=INSET,
-                            text_color=TEXT, border_color=SHADOW, border_width=1)
+                            text_color=LOG_TEXT, border_color=SHADOW, border_width=1)
 
     def _check(self, parent, text, var):
         return ctk.CTkCheckBox(parent, text=text, variable=var,
@@ -523,7 +530,7 @@ class App:
         c = self._card(main, pady=(0, 8))
         holder = ctk.CTkFrame(c, fg_color=INSET, corner_radius=10)
         holder.pack(fill="both", expand=True, padx=10, pady=10)
-        self.log = tk.Text(holder, height=3, font=self.font_log, bg=INSET, fg=TEXT,
+        self.log = tk.Text(holder, height=3, font=self.font_log, bg=INSET, fg=LOG_TEXT,
                            relief="flat", bd=0, highlightthickness=0, wrap="none",
                            state="disabled")
         self.log.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=6)
