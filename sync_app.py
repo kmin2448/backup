@@ -192,80 +192,6 @@ class SyncPlan:
         self.dirs_to_delete = sorted(dst_dirs - src_dirs, reverse=True)
 
 
-class TwoWayPlan:
-    """양방향 동기화 계획. 양쪽의 최신 파일을 서로 복사한다(삭제는 하지 않음).
-
-    overwrite=True  : 양쪽에 같은 파일이 있고 다르면 더 최근(수정시간) 파일로 덮어씀
-    overwrite=False : 양쪽에 같은 파일명이 있으면 건너뜀
-    """
-
-    def __init__(self, a, b, overwrite=True):
-        self.a = a
-        self.b = b
-        self.overwrite = overwrite
-        self.actions = []   # (src_path, dst_path, rel, tag)
-        self.to_skip = []
-
-    def build(self):
-        fa = list_relative_files(self.a) if os.path.isdir(self.a) else set()
-        fb = list_relative_files(self.b) if os.path.isdir(self.b) else set()
-        for rel in sorted(fa | fb):
-            pa = os.path.join(self.a, rel)
-            pb = os.path.join(self.b, rel)
-            if rel in fa and rel not in fb:
-                self.actions.append((pa, pb, rel, "대상에 추가"))
-            elif rel in fb and rel not in fa:
-                self.actions.append((pb, pa, rel, "원본에 추가"))
-            elif files_identical(pa, pb) or not self.overwrite:
-                self.to_skip.append(rel)
-            else:
-                try:
-                    ma, mb = os.stat(pa).st_mtime, os.stat(pb).st_mtime
-                except OSError:
-                    self.to_skip.append(rel)
-                    continue
-                if ma > mb + MTIME_TOLERANCE:
-                    self.actions.append((pa, pb, rel, "대상 갱신"))
-                elif mb > ma + MTIME_TOLERANCE:
-                    self.actions.append((pb, pa, rel, "원본 갱신"))
-                else:
-                    self.to_skip.append(rel)
-
-
-def find_drive_folders():
-    """Google Drive for Desktop 이 만든 드라이브 폴더 후보를 찾는다."""
-    cands = []
-
-    def add(p):
-        if p and os.path.isdir(p) and p not in cands:
-            cands.append(p)
-
-    if sys.platform == "win32":
-        import string
-        for L in string.ascii_uppercase:
-            root = f"{L}:\\"
-            for name in ("My Drive", "내 드라이브"):
-                add(os.path.join(root, name))
-            # 마운트 드라이브 루트 자체(내 드라이브/공유 드라이브 포함)
-            if os.path.isdir(os.path.join(root, "My Drive")) or \
-                    os.path.isdir(os.path.join(root, "내 드라이브")):
-                add(root)
-        home = os.path.expanduser("~")
-        for name in ("My Drive", "내 드라이브", "Google Drive", "GoogleDrive"):
-            add(os.path.join(home, name))
-    elif sys.platform == "darwin":
-        import glob
-        add("/Volumes/GoogleDrive")
-        for p in glob.glob(os.path.expanduser("~/Library/CloudStorage/GoogleDrive-*")):
-            add(p)
-        add(os.path.expanduser("~/Google Drive"))
-    else:
-        home = os.path.expanduser("~")
-        for name in ("GoogleDrive", "Google Drive", "gdrive"):
-            add(os.path.join(home, name))
-    return cands
-
-
 class Tooltip:
     """위젯에 마우스를 올리면 기능 설명을 말풍선으로 보여준다."""
 
@@ -347,8 +273,6 @@ class App:
         self.confirm_delete_var = tk.BooleanVar(value=cfg.get("confirm_delete", True))
         # 동일 파일명 처리: "skip" = 무조건 건너뛰기, "diff" = 다르면 덮어쓰기
         self.conflict_mode = tk.StringVar(value=cfg.get("conflict_mode", "diff"))
-        # 동기화 방향: "oneway" = 원본→대상, "twoway" = 양방향(양쪽 최신 유지)
-        self.sync_dir = tk.StringVar(value=cfg.get("sync_dir", "oneway"))
         self.src_input = tk.StringVar()
         self.dst_input = tk.StringVar()
 
@@ -432,7 +356,7 @@ class App:
                         relief="flat", borderwidth=0)
 
     # ---------------- 위젯 헬퍼 (customtkinter, 뉴모피즘) ----------------
-    def _card(self, parent, pady=(0, 5)):
+    def _card(self, parent, pady=(0, 7)):
         # 배경과 거의 같은 톤 + 옅은 경계선으로 부드럽게 떠 있는 느낌을 근사
         card = ctk.CTkFrame(parent, fg_color=CARD, corner_radius=16,
                             border_width=1, border_color="#E0E0E0")
@@ -489,13 +413,6 @@ class App:
                                   border_color=SHADOW, radiobutton_width=20,
                                   radiobutton_height=20)
 
-    def _dir_radio(self, parent, text, value):
-        return ctk.CTkRadioButton(parent, text=text, variable=self.sync_dir,
-                                  value=value, command=self._persist, font=self.font_n,
-                                  text_color=TEXT, fg_color=TEAL, hover_color=TEAL_DARK,
-                                  border_color=SHADOW, radiobutton_width=20,
-                                  radiobutton_height=20)
-
     def _label(self, parent, text, font=None, fg=TEXT, bg=None):
         return ctk.CTkLabel(parent, text=text, font=font or self.font_n,
                             text_color=fg, fg_color="transparent")
@@ -503,11 +420,11 @@ class App:
     # ---------------- UI 구성 ----------------
     def _build_ui(self):
         main = ctk.CTkFrame(self.root, fg_color=BG, corner_radius=0)
-        main.pack(fill="both", expand=True, padx=16, pady=(8, 8))
+        main.pack(fill="both", expand=True, padx=16, pady=12)
 
         # 헤더
         self._label(main, "폴더 동기화", font=self.font_title, fg=TEAL).pack(
-            anchor="w", pady=(0, 6))
+            anchor="w", pady=(0, 8))
 
         # 폴더 선택 카드
         c = self._card(main)
@@ -524,13 +441,9 @@ class App:
         self._button(c, "찾아보기", self.browse_dst,
                      "복사될 대상(D드라이브) 폴더를 선택합니다", width=92).grid(
             row=1, column=2, padx=(8, 14), pady=5)
-        self._button(c, "🅖  Google Drive 폴더 불러오기", self.pick_drive,
-                     "Google Drive for Desktop 으로 마운트된 드라이브 폴더를 찾아 "
-                     "대상 폴더로 지정합니다", width=240).grid(
-            row=2, column=0, columnspan=3, sticky="w", padx=14, pady=(2, 2))
         self._button(c, "＋  목록에 추가", self.add_pair,
                      "위에서 고른 원본·대상 폴더를 동기화 목록에 추가합니다",
-                     primary=True).grid(row=3, column=0, columnspan=3, sticky="ew",
+                     primary=True).grid(row=2, column=0, columnspan=3, sticky="ew",
                                         padx=14, pady=(5, 11))
 
         # 폴더 목록 카드
@@ -561,24 +474,16 @@ class App:
 
         # 옵션 카드
         c = self._card(main)
-        self._label(c, "동기화 방향", font=self.font_b, fg=TEXT).pack(
-            anchor="w", padx=14, pady=(10, 3))
-        dirrow = ctk.CTkFrame(c, fg_color="transparent")
-        dirrow.pack(fill="x", padx=14, pady=(0, 2))
-        self._dir_radio(dirrow, "단방향 (원본 → 대상)", "oneway").pack(side="left")
-        self._dir_radio(dirrow, "양방향 (양쪽 최신 유지, 구글드라이브 추천)",
-                        "twoway").pack(side="left", padx=(16, 0))
-        ctk.CTkFrame(c, height=1, fg_color=SHADOW).pack(fill="x", padx=14, pady=(4, 2))
         self._label(c, "같은 이름의 파일이 대상에 있을 때",
-                    font=self.font_b, fg=TEXT).pack(anchor="w", padx=14, pady=(6, 3))
+                    font=self.font_b, fg=TEXT).pack(anchor="w", padx=14, pady=(10, 3))
         self._mode_radio(c, "무조건 건너뛰기", "skip").pack(anchor="w", padx=14, pady=1)
         self._mode_radio(c, "파일 용량 또는 수정일자가 다르면 덮어쓰기", "diff").pack(
             anchor="w", padx=14, pady=(1, 6))
         ctk.CTkFrame(c, height=1, fg_color=SHADOW).pack(fill="x", padx=14, pady=2)
-        self._check(c, "원본에서 삭제된 파일을 대상에서도 삭제 (단방향 전용)",
-                    self.delete_var).pack(anchor="w", padx=14, pady=(6, 2))
+        self._check(c, "원본에서 삭제된 파일을 대상에서도 삭제",
+                    self.delete_var).pack(anchor="w", padx=14, pady=(6, 3))
         self._check(c, "삭제 전 확인 (켜면 삭제 직전에 한 번 물어봅니다)",
-                    self.confirm_delete_var).pack(anchor="w", padx=14, pady=(0, 8))
+                    self.confirm_delete_var).pack(anchor="w", padx=14, pady=(0, 9))
 
         # 예약 카드
         c = self._card(main)
@@ -653,24 +558,6 @@ class App:
         if p:
             self.dst_input.set(p)
 
-    def pick_drive(self):
-        """Google Drive for Desktop 폴더를 찾아 대상 폴더로 지정한다."""
-        cands = find_drive_folders()
-        if cands:
-            init = cands[0]
-        else:
-            messagebox.showinfo(
-                "Google Drive",
-                "Google Drive for Desktop 폴더를 찾지 못했습니다.\n\n"
-                "1) https://www.google.com/drive/download/ 에서 'Google Drive for "
-                "Desktop'을 설치하고 로그인하세요.\n"
-                "2) 설치되면 드라이브가 탐색기에 폴더(예: G:\\내 드라이브)로 나타납니다.\n"
-                "3) 그 폴더를 직접 선택해 주세요.")
-            init = os.path.expanduser("~")
-        p = filedialog.askdirectory(title="Google Drive 폴더 선택", initialdir=init)
-        if p:
-            self.dst_input.set(p)
-
     def _refresh_tree(self):
         self.tree.delete(*self.tree.get_children())
         for src, dst in self.pairs:
@@ -735,7 +622,6 @@ class App:
             "delete_enabled": self.delete_var.get(),
             "confirm_delete": self.confirm_delete_var.get(),
             "conflict_mode": self.conflict_mode.get(),
-            "sync_dir": self.sync_dir.get(),
             "sched_enabled": self.sched_enabled.get(),
             "sched_mode": self.sched_mode.get(),
             "sched_time": self.sched_time.get().strip(),
@@ -846,51 +732,34 @@ class App:
         self.busy = True
         self._cancel.clear()
         overwrite = self.conflict_mode.get() == "diff"
-        twoway = self.sync_dir.get() == "twoway"
         self.progress_var.set("")
         self.set_status("변경사항 분석 중...")
         self._set_buttons(False)
-        threading.Thread(target=self._preview_worker, args=(pairs, overwrite, twoway),
+        threading.Thread(target=self._preview_worker, args=(pairs, overwrite),
                          daemon=True).start()
 
-    def _preview_worker(self, pairs, overwrite, twoway):
+    def _preview_worker(self, pairs, overwrite):
         try:
-            if twoway:
-                tot_act = tot_skip = 0
-                for src, dst in pairs:
-                    plan = TwoWayPlan(src, dst, overwrite)
-                    plan.build()
-                    tot_act += len(plan.actions)
-                    tot_skip += len(plan.to_skip)
-                    self.log_msg(f"===== {src} ↔ {dst} (양방향) =====")
-                    self.log_msg(f"  변경 적용 {len(plan.actions)} / "
-                                 f"건너뜀 {len(plan.to_skip)}")
-                    for _s, _d, rel, tag in plan.actions:
-                        self.log_msg(f"  [{tag}] {rel}")
-                self.log_msg("")
-                self.log_msg(f"### 전체 합계(양방향): 변경 적용 {tot_act} / "
-                             f"건너뜀 {tot_skip}")
-            else:
-                tot_copy = tot_update = tot_skip = tot_delete = 0
-                for src, dst in pairs:
-                    plan = SyncPlan(src, dst, overwrite)
-                    plan.build()
-                    tot_copy += len(plan.to_copy)
-                    tot_update += len(plan.to_update)
-                    tot_skip += len(plan.to_skip)
-                    tot_delete += len(plan.to_delete)
-                    self.log_msg(f"===== {src} → {dst} =====")
-                    self.log_msg(f"  추가 {len(plan.to_copy)} / 변경 {len(plan.to_update)} / "
-                                 f"건너뜀 {len(plan.to_skip)} / 삭제 {len(plan.to_delete)}")
-                    for rel in plan.to_copy:
-                        self.log_msg(f"  [추가] {rel}")
-                    for rel in plan.to_update:
-                        self.log_msg(f"  [변경] {rel}")
-                    for rel in plan.to_delete:
-                        self.log_msg(f"  [삭제] {rel}")
-                self.log_msg("")
-                self.log_msg(f"### 전체 합계: 추가 {tot_copy} / 변경 {tot_update} / "
-                             f"건너뜀 {tot_skip} / 삭제 {tot_delete}")
+            tot_copy = tot_update = tot_skip = tot_delete = 0
+            for src, dst in pairs:
+                plan = SyncPlan(src, dst, overwrite)
+                plan.build()
+                tot_copy += len(plan.to_copy)
+                tot_update += len(plan.to_update)
+                tot_skip += len(plan.to_skip)
+                tot_delete += len(plan.to_delete)
+                self.log_msg(f"===== {src} → {dst} =====")
+                self.log_msg(f"  추가 {len(plan.to_copy)} / 변경 {len(plan.to_update)} / "
+                             f"건너뜀 {len(plan.to_skip)} / 삭제 {len(plan.to_delete)}")
+                for rel in plan.to_copy:
+                    self.log_msg(f"  [추가] {rel}")
+                for rel in plan.to_update:
+                    self.log_msg(f"  [변경] {rel}")
+                for rel in plan.to_delete:
+                    self.log_msg(f"  [삭제] {rel}")
+            self.log_msg("")
+            self.log_msg(f"### 전체 합계: 추가 {tot_copy} / 변경 {tot_update} / "
+                         f"건너뜀 {tot_skip} / 삭제 {tot_delete}")
             self.set_status("미리보기 완료")
         finally:
             self.busy = False
@@ -916,71 +785,9 @@ class App:
         delete_enabled = self.delete_var.get()
         confirm_delete = self.confirm_delete_var.get()
         overwrite = self.conflict_mode.get() == "diff"
-        if self.sync_dir.get() == "twoway":
-            threading.Thread(target=self._twoway_worker, args=(pairs, overwrite),
-                             daemon=True).start()
-            return
         threading.Thread(target=self._sync_worker,
                          args=(pairs, delete_enabled, confirm_delete, overwrite),
                          daemon=True).start()
-
-    def _twoway_worker(self, pairs, overwrite):
-        try:
-            plans = []
-            for a, b in pairs:
-                os.makedirs(a, exist_ok=True)
-                os.makedirs(b, exist_ok=True)
-                plan = TwoWayPlan(a, b, overwrite)
-                plan.build()
-                plans.append(plan)
-
-            total = sum(len(p.actions) for p in plans)
-            tot_skip = sum(len(p.to_skip) for p in plans)
-            self.log_msg(f"분석 완료(양방향) - 폴더 쌍 {len(plans)}개 / "
-                         f"변경 적용 {total} / 건너뜀 {tot_skip}")
-            self._set_progress_max(total)
-
-            done = copied = updated = errors = 0
-            cancelled = False
-            for plan in plans:
-                for src, dst, rel, tag in plan.actions:
-                    if self._cancel.is_set():
-                        cancelled = True
-                        break
-                    try:
-                        os.makedirs(os.path.dirname(dst), exist_ok=True)
-                        shutil.copy2(src, dst)
-                        self.log_msg(f"[{tag}] {rel}")
-                        if "추가" in tag:
-                            copied += 1
-                        else:
-                            updated += 1
-                    except Exception as e:
-                        self.log_msg(f"[오류] 복사 실패 {rel}: {e}")
-                        errors += 1
-                    done += 1
-                    self._emit_progress(done)
-                if cancelled:
-                    break
-
-            self._emit_progress(done, force=True)
-            self.log_msg("")
-            if cancelled:
-                self.log_msg(f"===== 중지됨 ({datetime.now():%Y-%m-%d %H:%M:%S}) =====")
-                self.set_status(f"중지됨(양방향): 적용 {copied + updated}")
-            else:
-                self.log_msg(f"===== 완료 ({datetime.now():%Y-%m-%d %H:%M:%S}) =====")
-                self.log_msg(f"추가 {copied} / 갱신 {updated} / 건너뜀 {tot_skip} / "
-                             f"오류 {errors}")
-                self.set_status(
-                    f"완료(양방향): 추가 {copied}, 갱신 {updated}, 오류 {errors}")
-        except Exception as e:
-            self.log_msg(f"[치명적 오류] {e}")
-            self.set_status("오류로 중단됨")
-        finally:
-            self.busy = False
-            self._cancel.clear()
-            self._set_buttons(True)
 
     def _sync_worker(self, pairs, delete_enabled, confirm_delete, overwrite):
         try:
