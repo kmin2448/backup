@@ -25,11 +25,12 @@ jobs:
           python-version: "3.12"
 
       - name: Install PyInstaller
-        run: python -m pip install --upgrade pip pyinstaller
+        run: python -m pip install --upgrade pip pyinstaller customtkinter
 
       - name: Build single-file exe
         run: >
           pyinstaller --onefile --windowed --name FolderSync
+          --collect-all customtkinter
           --add-data "assets;assets" sync_app.py
 
       - name: Upload build artifact

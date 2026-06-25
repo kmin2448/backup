@@ -19,17 +19,18 @@ Python 표준 라이브러리(tkinter)만 사용하므로 추가 설치 없이 �
 
 ### 방법 A. Python 으로 바로 실행
 1. https://www.python.org/downloads/ 에서 Python 설치 (설치 시 **"Add Python to PATH"** 체크)
-2. `동기화_실행.bat` 더블클릭 (또는 `python sync_app.py`)
+2. `동기화_실행.bat` 더블클릭 (필요한 `customtkinter` 를 자동 설치 후 실행)
+   - 수동으로는 `pip install customtkinter` 후 `python sync_app.py`
 
 ### 방법 B. 단일 .exe 로 만들어서 실행 (Python 없이 배포 가능)
-1. `build_exe.bat` 더블클릭 → PyInstaller가 자동 설치되고 빌드됩니다.
+1. `build_exe.bat` 더블클릭 → PyInstaller·customtkinter가 자동 설치되고 빌드됩니다.
 2. 완료되면 `dist\폴더동기화.exe` 가 생성됩니다. 이 파일만 있으면
    Python이 없는 PC에서도 더블클릭으로 실행됩니다.
 
    직접 명령으로 빌드하려면:
    ```
-   pip install pyinstaller
-   pyinstaller --onefile --windowed --name "폴더동기화" sync_app.py
+   pip install pyinstaller customtkinter
+   pyinstaller --onefile --windowed --name "폴더동기화" --collect-all customtkinter sync_app.py
    ```
    - `--onefile` : 하나의 exe로 묶기
    - `--windowed` : 검은 콘솔 창 없이 GUI만 표시
@@ -69,13 +70,14 @@ Python 표준 라이브러리(tkinter)만 사용하므로 추가 설치 없이 �
 
 ## 화면 / 폰트
 
-- 흰색 카드 + 오렌지 포인트의 밝고 선명한 플랫 디자인입니다.
-- 모든 항목이 **세로 스크롤 없이 한 화면**에 들어오도록 글꼴·여백을 조정했습니다.
-- **고해상도(High-DPI) 대응**: Windows에서 화면 배율(125%/150% 등)이 적용돼도 글자와
-  버튼이 흐릿하게 확대되지 않고 또렷하게 표시됩니다.
-- 글꼴은 **Pretendard** 를 사용합니다. 시스템에 설치되어 있지 않다면
-  `assets/Pretendard-Regular.ttf` 파일을 넣어 두면 설치 없이 적용됩니다(Windows).
-  파일이 없으면 시스템 기본 글꼴로 자동 대체됩니다.
+- **customtkinter** 기반 **뉴모피즘(Soft UI)** 디자인입니다: 연한 민트빛 배경(#E8EEE9),
+  둥근 모서리로 떠 있는 카드, 안으로 들어간(inset) 느낌의 입력칸·리스트, **딥그린/청록(#2D6A5A)**
+  포인트 컬러로 통일했습니다.
+- 강조 버튼(목록에 추가, 전체 동기화 시작)은 진한 청록, **멈추기**는 같은 계열의 외곽선 스타일,
+  일반 버튼은 연한 카드 톤 + 청록 글씨로 구분했습니다.
+- 글꼴은 **Windows 맑은 고딕**(없으면 시스템 기본)으로 또렷하게 표시되며,
+  고해상도(High-DPI)에서도 흐릿하지 않습니다.
+- 모든 항목이 한 화면에 들어오도록 크기를 맞췄습니다(창 높이 약 890px).
 
 ## 안전장치
 

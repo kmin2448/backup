@@ -17,10 +17,10 @@ if "%PYEXE%"=="" (
     exit /b 1
 )
 
-echo [1/2] PyInstaller 설치 확인 / 설치 중...
-%PYEXE% -m pip install --upgrade pyinstaller
+echo [1/2] PyInstaller / customtkinter 설치 확인 / 설치 중...
+%PYEXE% -m pip install --upgrade pyinstaller customtkinter
 if errorlevel 1 (
-    echo [오류] PyInstaller 설치에 실패했습니다.
+    echo [오류] 라이브러리 설치에 실패했습니다.
     pause
     exit /b 1
 )
@@ -33,7 +33,7 @@ REM  --name        : 결과 파일 이름
 REM  assets 폴더(글꼴 등)가 있으면 exe 안에 함께 포함 (Windows 구분자는 ; )
 set ADDDATA=
 if exist "assets\*" set ADDDATA=--add-data "assets;assets"
-%PYEXE% -m PyInstaller --onefile --windowed --name "폴더동기화" %ADDDATA% sync_app.py
+%PYEXE% -m PyInstaller --onefile --windowed --name "폴더동기화" --collect-all customtkinter %ADDDATA% sync_app.py
 if errorlevel 1 (
     echo [오류] 빌드에 실패했습니다.
     pause

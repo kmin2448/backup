@@ -27,28 +27,34 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import tkinter.font as tkfont
 
+import customtkinter as ctk
+
 # 설정 파일 (등록한 폴더 쌍과 옵션을 기억)
 CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".folder_sync_config.json")
 
-# ----- 색상 테마 (밝고 선명한 플랫 디자인) -----
-BG = "#F4F5F7"          # 앱 배경
-CARD = "#FFFFFF"        # 카드 배경
-TEXT = "#1F2024"        # 본문 (진한 색 = 또렷함)
-MUTED = "#5C5F66"       # 보조 텍스트 (읽기 충분한 회색)
-BORDER = "#D7D9DE"      # 카드/입력 테두리
-PRIMARY = "#F47216"     # 주요 동작(오렌지)
-PRIMARY_HOVER = "#DE6510"
-DANGER = "#E5484D"      # 멈추기(빨강)
-DANGER_HOVER = "#CF3B40"
-BTN = "#ECEDF0"         # 보조 버튼 배경
-BTN_HOVER = "#DEE0E6"
-DISABLED = "#B9BBC2"
-DISABLED_BG = "#ECECEF"
+# ----- 색상 테마 (뉴모피즘 / Soft UI · 민트 + 딥그린) -----
+BG = "#E8EEE9"          # 연한 민트빛 오프화이트 (앱 배경)
+CARD = "#F1F6F1"        # 살짝 밝게 떠 있는 카드
+CARD2 = "#E4ECE5"       # 보조 버튼 톤
+INSET = "#DEE7E0"       # 안으로 들어간 느낌의 입력칸/리스트/트로프
+SHADOW = "#CBD7CD"      # 부드러운 그림자(테두리 근사)
+HILIGHT = "#FBFEFB"     # 밝은 하이라이트(테두리 근사)
+TEAL = "#2D6A5A"        # 포인트 딥그린/청록
+TEAL_DARK = "#235447"   # 진한 청록 (메인 버튼 hover)
+TEAL_SOFT = "#3E8473"   # 연한 청록
+TEXT = "#284A40"        # 본문 (딥그린 계열)
+MUTED = "#5E7269"       # 보조 텍스트
+BTN_HOVER = "#D6E1D8"   # 보조 버튼 hover
+STOP_HOVER = "#DCE7DE"  # 멈추기(외곽선) hover
 
-# 폰트 (Pretendard, 없으면 시스템 기본 폰트로 대체됨).
-# 세로 스크롤 없이 한 화면에 들어오도록 본문 13pt 로 조정.
-FONT_FAMILY = "Pretendard"
-BASE_SIZE = 12
+# 폰트: 깔끔하게 보이도록 OS 기본 산세리프 사용 (Windows=맑은 고딕)
+if sys.platform == "win32":
+    FONT_FAMILY = "Malgun Gothic"
+elif sys.platform == "darwin":
+    FONT_FAMILY = "Apple SD Gothic Neo"
+else:
+    FONT_FAMILY = "Pretendard"
+BASE_SIZE = 13
 
 # 파일 동일 여부를 판단할 때 수정시간 오차 허용치(초).
 MTIME_TOLERANCE = 2.0
@@ -193,9 +199,22 @@ class Tooltip:
         self.delay = delay
         self.tip = None
         self.after_id = None
-        widget.bind("<Enter>", self._enter, add="+")
-        widget.bind("<Leave>", self._leave, add="+")
-        widget.bind("<ButtonPress>", self._leave, add="+")
+        # CTk 버튼은 내부 캔버스/라벨로 구성되므로 자식까지 함께 바인딩한다.
+        for w in [widget] + self._descendants(widget):
+            w.bind("<Enter>", self._enter, add="+")
+            w.bind("<Leave>", self._leave, add="+")
+            w.bind("<ButtonPress>", self._leave, add="+")
+
+    @staticmethod
+    def _descendants(widget):
+        out = []
+        try:
+            for ch in widget.winfo_children():
+                out.append(ch)
+                out.extend(Tooltip._descendants(ch))
+        except Exception:
+            pass
+        return out
 
     def _enter(self, _=None):
         self._cancel()
@@ -236,7 +255,10 @@ class App:
     def __init__(self, root):
         self.root = root
         root.title("폴더 동기화 (SSD → D드라이브)")
-        root.configure(bg=BG)
+        try:
+            root.configure(fg_color=BG)
+        except Exception:
+            root.configure(bg=BG)
 
         cfg = load_config()
 
@@ -321,116 +343,114 @@ class App:
         except tk.TclError:
             pass
         rowh = self.tree_font.metrics("linespace") + 14
-        style.configure("Sync.Treeview", background=CARD, fieldbackground=CARD,
+        style.configure("Sync.Treeview", background=INSET, fieldbackground=INSET,
                         foreground=TEXT, borderwidth=0, relief="flat",
                         rowheight=rowh, font=self.font_n)
-        style.map("Sync.Treeview", background=[("selected", "#FFE6D2")],
-                  foreground=[("selected", TEXT)])
-        style.configure("Sync.Horizontal.TProgressbar", troughcolor="#E5E6EA",
-                        background=PRIMARY, borderwidth=0, thickness=12)
-        style.configure("Sync.Vertical.TScrollbar", troughcolor=CARD,
-                        background="#CFD2D8", bordercolor=CARD, arrowcolor=MUTED,
+        style.map("Sync.Treeview", background=[("selected", TEAL)],
+                  foreground=[("selected", "#FFFFFF")])
+        style.configure("Sync.Vertical.TScrollbar", troughcolor=INSET,
+                        background=SHADOW, bordercolor=INSET, arrowcolor=TEAL,
                         relief="flat", borderwidth=0)
 
-    # ---------------- 위젯 헬퍼 ----------------
-    def _card(self, parent, pady=(0, 8)):
-        outer = tk.Frame(parent, bg=BORDER)
-        outer.pack(fill="x", pady=pady)
-        inner = tk.Frame(outer, bg=CARD)
-        inner.pack(fill="both", expand=True, padx=1, pady=1)
-        return inner
+    # ---------------- 위젯 헬퍼 (customtkinter, 뉴모피즘) ----------------
+    def _card(self, parent, pady=(0, 7)):
+        card = ctk.CTkFrame(parent, fg_color=CARD, corner_radius=16,
+                            border_width=1, border_color=HILIGHT)
+        card.pack(fill="x", pady=pady)
+        return card
 
-    def _button(self, parent, text, command, tooltip="", primary=False, danger=False):
+    def _button(self, parent, text, command, tooltip="", primary=False,
+                danger=False, width=110):
         if danger:
-            bg, fg, hover = DANGER, "white", DANGER_HOVER
+            # 멈추기: 외곽선만 청록(메인과 같은 계열, 명도만 구분)
+            opts = dict(fg_color="transparent", hover_color=STOP_HOVER,
+                        text_color=TEAL, border_width=2, border_color=TEAL,
+                        text_color_disabled=MUTED)
         elif primary:
-            bg, fg, hover = PRIMARY, "white", PRIMARY_HOVER
+            opts = dict(fg_color=TEAL, hover_color=TEAL_DARK,
+                        text_color="#FFFFFF", text_color_disabled="#CFE0DA")
         else:
-            bg, fg, hover = BTN, TEXT, BTN_HOVER
-        b = tk.Button(parent, text=text, command=command,
-                      font=self.font_b if (primary or danger) else self.font_n,
-                      bg=bg, fg=fg, activebackground=hover, activeforeground=fg,
-                      disabledforeground=DISABLED, relief="flat", bd=0,
-                      padx=14, pady=6, cursor="hand2",
-                      highlightthickness=0)
-        b._bg = bg
-        b.bind("<Enter>", lambda e: b["state"] == "normal" and b.configure(bg=hover),
-               add="+")
-        b.bind("<Leave>", lambda e: b.configure(bg=b._bg), add="+")
+            opts = dict(fg_color=CARD2, hover_color=BTN_HOVER, text_color=TEAL,
+                        text_color_disabled=MUTED)
+        b = ctk.CTkButton(parent, text=text, command=command, width=width, height=30,
+                          corner_radius=11,
+                          font=self.font_b if (primary or danger) else self.font_n,
+                          **opts)
         if tooltip:
             Tooltip(b, tooltip, self.font_small)
         return b
 
-    def _entry(self, parent, var, width=None):
-        return tk.Entry(parent, textvariable=var, width=width, font=self.font_n,
-                        bg=CARD, fg=TEXT, relief="flat", bd=0, highlightthickness=1,
-                        highlightbackground=BORDER, highlightcolor=PRIMARY,
-                        insertbackground=TEXT)
+    def _entry(self, parent, var, width=140):
+        return ctk.CTkEntry(parent, textvariable=var, width=width, height=30,
+                            corner_radius=10, font=self.font_n, fg_color=INSET,
+                            text_color=TEXT, border_color=SHADOW, border_width=1)
 
     def _check(self, parent, text, var):
-        return tk.Checkbutton(parent, text=text, variable=var, command=self._persist,
-                              font=self.font_n, bg=CARD, fg=TEXT, anchor="w",
-                              activebackground=CARD, activeforeground=TEXT,
-                              selectcolor=CARD, highlightthickness=0, bd=0,
-                              cursor="hand2")
+        return ctk.CTkCheckBox(parent, text=text, variable=var,
+                               command=self._persist, font=self.font_n,
+                               text_color=TEXT, fg_color=TEAL, hover_color=TEAL_DARK,
+                               checkmark_color="#FFFFFF", border_color=SHADOW,
+                               corner_radius=6, checkbox_width=18, checkbox_height=18)
 
     def _radio(self, parent, text, value):
-        return tk.Radiobutton(parent, text=text, variable=self.sched_mode,
-                              value=value, command=self._persist, font=self.font_n,
-                              bg=CARD, fg=TEXT, activebackground=CARD,
-                              activeforeground=TEXT, selectcolor=CARD,
-                              highlightthickness=0, bd=0, cursor="hand2")
+        return ctk.CTkRadioButton(parent, text=text, variable=self.sched_mode,
+                                  value=value, command=self._persist, font=self.font_n,
+                                  text_color=TEXT, fg_color=TEAL, hover_color=TEAL_DARK,
+                                  border_color=SHADOW, radiobutton_width=20,
+                                  radiobutton_height=20)
 
     def _mode_radio(self, parent, text, value):
-        return tk.Radiobutton(parent, text=text, variable=self.conflict_mode,
-                              value=value, command=self._persist, font=self.font_n,
-                              bg=CARD, fg=TEXT, activebackground=CARD,
-                              activeforeground=TEXT, selectcolor=CARD,
-                              highlightthickness=0, bd=0, cursor="hand2", anchor="w")
+        return ctk.CTkRadioButton(parent, text=text, variable=self.conflict_mode,
+                                  value=value, command=self._persist, font=self.font_n,
+                                  text_color=TEXT, fg_color=TEAL, hover_color=TEAL_DARK,
+                                  border_color=SHADOW, radiobutton_width=20,
+                                  radiobutton_height=20)
 
-    def _label(self, parent, text, font=None, fg=TEXT, bg=CARD):
-        return tk.Label(parent, text=text, font=font or self.font_n, fg=fg, bg=bg)
+    def _label(self, parent, text, font=None, fg=TEXT, bg=None):
+        return ctk.CTkLabel(parent, text=text, font=font or self.font_n,
+                            text_color=fg, fg_color="transparent")
 
     # ---------------- UI 구성 ----------------
     def _build_ui(self):
-        # 세로 스크롤 없이 한 화면에 모두 들어오도록 직접 배치한다.
-        main = tk.Frame(self.root, bg=BG, padx=16, pady=12)
-        main.pack(fill="both", expand=True)
+        main = ctk.CTkFrame(self.root, fg_color=BG, corner_radius=0)
+        main.pack(fill="both", expand=True, padx=16, pady=12)
 
         # 헤더
-        self._label(main, "폴더 동기화", font=self.font_title, bg=BG).pack(
+        self._label(main, "폴더 동기화", font=self.font_title, fg=TEAL).pack(
             anchor="w", pady=(0, 8))
 
         # 폴더 선택 카드
         c = self._card(main)
-        c.columnconfigure(1, weight=1)
+        c.grid_columnconfigure(1, weight=1)
         self._label(c, "원본 폴더").grid(row=0, column=0, sticky="w",
-                                      padx=(12, 8), pady=(12, 6))
-        self._entry(c, self.src_input).grid(row=0, column=1, sticky="ew", pady=(12, 6))
+                                      padx=(14, 8), pady=(11, 5))
+        self._entry(c, self.src_input).grid(row=0, column=1, sticky="ew", pady=(11, 5))
         self._button(c, "찾아보기", self.browse_src,
-                     "동기화할 원본(SSD) 폴더를 선택합니다").grid(
-            row=0, column=2, padx=(8, 12), pady=(12, 6))
+                     "동기화할 원본(SSD) 폴더를 선택합니다", width=92).grid(
+            row=0, column=2, padx=(8, 14), pady=(11, 5))
         self._label(c, "대상 폴더").grid(row=1, column=0, sticky="w",
-                                      padx=(12, 8), pady=6)
-        self._entry(c, self.dst_input).grid(row=1, column=1, sticky="ew", pady=6)
+                                      padx=(14, 8), pady=5)
+        self._entry(c, self.dst_input).grid(row=1, column=1, sticky="ew", pady=5)
         self._button(c, "찾아보기", self.browse_dst,
-                     "복사될 대상(D드라이브) 폴더를 선택합니다").grid(
-            row=1, column=2, padx=(8, 12), pady=6)
+                     "복사될 대상(D드라이브) 폴더를 선택합니다", width=92).grid(
+            row=1, column=2, padx=(8, 14), pady=5)
         self._button(c, "＋  목록에 추가", self.add_pair,
                      "위에서 고른 원본·대상 폴더를 동기화 목록에 추가합니다",
                      primary=True).grid(row=2, column=0, columnspan=3, sticky="ew",
-                                        padx=12, pady=(4, 12))
+                                        padx=14, pady=(5, 11))
 
         # 폴더 목록 카드
         c = self._card(main)
-        head = tk.Frame(c, bg=CARD)
-        head.pack(fill="x", padx=12, pady=(8, 2))
-        tk.Label(head, textvariable=self.count_var, font=self.font_small, fg=TEXT,
-                 bg=CARD).pack(side="left")
+        head = ctk.CTkFrame(c, fg_color="transparent")
+        head.pack(fill="x", padx=14, pady=(10, 3))
+        ctk.CTkLabel(head, textvariable=self.count_var, font=self.font_small,
+                     text_color=TEXT).pack(side="left")
         self._label(head, "항목을 더블클릭하면 위 칸으로 불러와 수정합니다",
                     font=self.font_small, fg=TEXT).pack(side="right")
-        tf = tk.Frame(c, bg=CARD)
-        tf.pack(fill="both", expand=True, padx=12)
+        holder = ctk.CTkFrame(c, fg_color=INSET, corner_radius=10)
+        holder.pack(fill="both", expand=True, padx=14)
+        tf = tk.Frame(holder, bg=INSET)
+        tf.pack(fill="both", expand=True, padx=6, pady=6)
         self.tree = ttk.Treeview(tf, show="tree", style="Sync.Treeview", height=2)
         self.tree.column("#0", width=560, anchor="w")
         self.tree.pack(side="left", fill="both", expand=True)
@@ -438,52 +458,52 @@ class App:
         sb = ttk.Scrollbar(tf, command=self.tree.yview, style="Sync.Vertical.TScrollbar")
         sb.pack(side="right", fill="y")
         self.tree.configure(yscrollcommand=sb.set)
-        lb = tk.Frame(c, bg=CARD)
-        lb.pack(fill="x", padx=12, pady=8)
+        lb = ctk.CTkFrame(c, fg_color="transparent")
+        lb.pack(fill="x", padx=14, pady=9)
         self._button(lb, "선택 제거", self.remove_pair,
-                     "목록에서 선택한 폴더 쌍을 제거합니다").pack(side="left")
+                     "목록에서 선택한 폴더 쌍을 제거합니다", width=104).pack(side="left")
         self._button(lb, "전체 비우기", self.clear_pairs,
-                     "동기화 목록을 모두 비웁니다").pack(side="left", padx=(8, 0))
+                     "동기화 목록을 모두 비웁니다", width=104).pack(side="left", padx=(8, 0))
 
         # 옵션 카드
         c = self._card(main)
         self._label(c, "같은 이름의 파일이 대상에 있을 때",
-                    font=self.font_b, fg=TEXT).pack(anchor="w", padx=10, pady=(8, 2))
-        self._mode_radio(c, "무조건 건너뛰기", "skip").pack(anchor="w", padx=10)
+                    font=self.font_b, fg=TEXT).pack(anchor="w", padx=14, pady=(10, 3))
+        self._mode_radio(c, "무조건 건너뛰기", "skip").pack(anchor="w", padx=14, pady=1)
         self._mode_radio(c, "파일 용량 또는 수정일자가 다르면 덮어쓰기", "diff").pack(
-            anchor="w", padx=10, pady=(0, 6))
-        tk.Frame(c, bg=BORDER, height=1).pack(fill="x", padx=10, pady=2)
+            anchor="w", padx=14, pady=(1, 6))
+        ctk.CTkFrame(c, height=1, fg_color=SHADOW).pack(fill="x", padx=14, pady=2)
         self._check(c, "원본에서 삭제된 파일을 대상에서도 삭제",
-                    self.delete_var).pack(anchor="w", padx=10, pady=(6, 2))
+                    self.delete_var).pack(anchor="w", padx=14, pady=(6, 3))
         self._check(c, "삭제 전 확인 (켜면 삭제 직전에 한 번 물어봅니다)",
-                    self.confirm_delete_var).pack(anchor="w", padx=10, pady=(2, 10))
+                    self.confirm_delete_var).pack(anchor="w", padx=14, pady=(0, 9))
 
         # 예약 카드
         c = self._card(main)
         self._check(c, "예약 실행 (프로그램이 켜져 있는 동안 자동 동기화)",
                     self.sched_enabled).grid(row=0, column=0, columnspan=6,
-                                             sticky="w", padx=10, pady=(10, 4))
-        self._radio(c, "반복", "interval").grid(row=1, column=0, sticky="w", padx=(10, 0))
-        self._entry(c, self.sched_interval, width=5).grid(row=1, column=1)
-        self._label(c, "분마다").grid(row=1, column=2, sticky="w", padx=(4, 14))
+                                             sticky="w", padx=14, pady=(10, 4))
+        self._radio(c, "반복", "interval").grid(row=1, column=0, sticky="w", padx=(14, 4))
+        self._entry(c, self.sched_interval, width=64).grid(row=1, column=1)
+        self._label(c, "분마다").grid(row=1, column=2, sticky="w", padx=(6, 14))
         self._radio(c, "매일", "daily").grid(row=1, column=3, sticky="w")
-        self._entry(c, self.sched_time, width=7).grid(row=1, column=4)
-        self._label(c, "에").grid(row=1, column=5, sticky="w", padx=(4, 10))
-        tk.Label(c, textvariable=self.sched_status_var, font=self.font_small,
-                 fg=MUTED, bg=CARD).grid(row=2, column=0, columnspan=6, sticky="w",
-                                         padx=10, pady=(4, 10))
+        self._entry(c, self.sched_time, width=92).grid(row=1, column=4, padx=(4, 0))
+        self._label(c, "에").grid(row=1, column=5, sticky="w", padx=(6, 14))
+        ctk.CTkLabel(c, textvariable=self.sched_status_var, font=self.font_small,
+                     text_color=MUTED).grid(row=2, column=0, columnspan=6, sticky="w",
+                                            padx=14, pady=(4, 9))
 
         # 실행 버튼
-        af = tk.Frame(main, bg=BG)
-        af.pack(fill="x", pady=(0, 10))
+        af = ctk.CTkFrame(main, fg_color="transparent")
+        af.pack(fill="x", pady=(2, 10))
         self.preview_btn = self._button(
             af, "미리보기", self.preview,
-            "실제 복사·삭제 없이 변경될 파일만 먼저 확인합니다")
+            "실제 복사·삭제 없이 변경될 파일만 먼저 확인합니다", width=120)
         self.preview_btn.pack(side="left")
         self.stop_btn = self._button(
             af, "멈추기", self.stop_sync,
-            "진행 중인 동기화를 중지합니다", danger=True)
-        self.stop_btn.configure(state="disabled", bg=DISABLED_BG)
+            "진행 중인 동기화를 중지합니다", danger=True, width=120)
+        self.stop_btn.configure(state="disabled")
         self.stop_btn.pack(side="right")
         self.sync_btn = self._button(
             af, "전체 동기화 시작", self.start_sync,
@@ -492,25 +512,29 @@ class App:
         self.sync_btn.pack(side="left", padx=(10, 8), fill="x", expand=True)
 
         # 진행 표시줄 + 퍼센트/남은 시간
-        self.progress = ttk.Progressbar(main, mode="determinate",
-                                        style="Sync.Horizontal.TProgressbar")
+        self.progress = ctk.CTkProgressBar(main, height=14, corner_radius=8,
+                                           fg_color=INSET, progress_color=TEAL)
+        self.progress.set(0)
         self.progress.pack(fill="x", pady=(0, 2))
-        tk.Label(main, textvariable=self.progress_var, font=self.font_small,
-                 fg=TEXT, bg=BG, anchor="w").pack(fill="x", pady=(0, 8))
+        ctk.CTkLabel(main, textvariable=self.progress_var, font=self.font_small,
+                     text_color=TEXT, anchor="w").pack(fill="x", pady=(0, 6))
 
         # 로그 카드
         c = self._card(main, pady=(0, 8))
-        self.log = tk.Text(c, height=3, font=self.font_log, bg=CARD, fg=TEXT,
+        holder = ctk.CTkFrame(c, fg_color=INSET, corner_radius=10)
+        holder.pack(fill="both", expand=True, padx=10, pady=10)
+        self.log = tk.Text(holder, height=3, font=self.font_log, bg=INSET, fg=TEXT,
                            relief="flat", bd=0, highlightthickness=0, wrap="none",
                            state="disabled")
-        self.log.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=8)
-        sb = ttk.Scrollbar(c, command=self.log.yview, style="Sync.Vertical.TScrollbar")
-        sb.pack(side="right", fill="y", pady=8, padx=(0, 6))
+        self.log.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=6)
+        sb = ttk.Scrollbar(holder, command=self.log.yview,
+                           style="Sync.Vertical.TScrollbar")
+        sb.pack(side="right", fill="y", pady=6, padx=(0, 4))
         self.log.configure(yscrollcommand=sb.set)
 
         # 상태 표시줄
-        tk.Label(main, textvariable=self.status_var, font=self.font_small, fg=MUTED,
-                 bg=BG, anchor="w").pack(fill="x")
+        ctk.CTkLabel(main, textvariable=self.status_var, font=self.font_small,
+                     text_color=MUTED, anchor="w").pack(fill="x")
 
     # ---------------- 폴더 선택 / 쌍 관리 ----------------
     def browse_src(self):
@@ -896,13 +920,8 @@ class App:
             st = "normal" if enabled else "disabled"
             self.sync_btn.configure(state=st)
             self.preview_btn.configure(state=st)
-            if enabled:
-                self.sync_btn.configure(bg=self.sync_btn._bg)
-                self.preview_btn.configure(bg=self.preview_btn._bg)
             # 멈추기 버튼은 동기화가 실제로 진행 중일 때만 활성화
-            self.stop_btn.configure(
-                state="normal" if allow_stop else "disabled",
-                bg=self.stop_btn._bg if allow_stop else DISABLED_BG)
+            self.stop_btn.configure(state="normal" if allow_stop else "disabled")
         self._ui(apply)
 
     @staticmethod
@@ -918,8 +937,7 @@ class App:
         self._total = max(total, 1)
         self._start_time = time.time()
         self._last_emit = 0.0
-        self._ui(lambda: (self.progress.configure(maximum=self._total, value=0),
-                          self.progress_var.set("0%")))
+        self._ui(lambda: (self.progress.set(0), self.progress_var.set("0%")))
 
     def _emit_progress(self, done, force=False):
         now = time.time()
@@ -927,7 +945,8 @@ class App:
             return
         self._last_emit = now
         total = getattr(self, "_total", 1)
-        pct = int(done * 100 / total) if total else 100
+        frac = min(1.0, done / total) if total else 1.0
+        pct = int(frac * 100)
         elapsed = now - getattr(self, "_start_time", now)
         if 0 < done < total and elapsed > 0.5:
             eta = elapsed / done * (total - done)
@@ -936,20 +955,14 @@ class App:
             text = f"100%   ·   완료   ({total}/{total})"
         else:
             text = f"{pct}%   ({done}/{total})"
-        self._ui(lambda: (self.progress.configure(value=done),
-                          self.progress_var.set(text)))
+        self._ui(lambda: (self.progress.set(frac), self.progress_var.set(text)))
 
 
 def main():
     enable_dpi_awareness()
-    root = tk.Tk()
-    # 화면 DPI에 맞춰 스케일링 → 점(pt) 단위 글자가 또렷하게 렌더링됨
-    try:
-        dpi = root.winfo_fpixels("1i")
-        if dpi > 0:
-            root.tk.call("tk", "scaling", dpi / 72.0)
-    except Exception:
-        pass
+    # customtkinter: 밝은 모드 + 고해상도에서 또렷하게 (자체 DPI 스케일링)
+    ctk.set_appearance_mode("light")
+    root = ctk.CTk()
     App(root)
     root.mainloop()
 
