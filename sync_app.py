@@ -99,20 +99,41 @@ def save_config(cfg):
         pass
 
 
+# 동기화에서 제외할 항목 (Google Drive for Desktop 임시 폴더/파일, OS 잔여물 등).
+# 이런 항목까지 복사하면 .tmp.driveupload 안의 숫자 임시 파일이 함께 복사된다.
+EXCLUDE_FILE_NAMES = {"desktop.ini", "thumbs.db", ".ds_store"}
+EXCLUDE_FILE_PREFIXES = ("~$",)
+
+
+def _is_excluded_dir(name):
+    """Google Drive 임시 폴더(.tmp.driveupload/.tmp.drivedownload 등) 제외."""
+    return name.lower().startswith(".tmp.drive")
+
+
+def _is_excluded_file(name):
+    low = name.lower()
+    return low in EXCLUDE_FILE_NAMES or any(
+        low.startswith(p) for p in EXCLUDE_FILE_PREFIXES)
+
+
 def list_relative_files(root):
-    """root 아래의 모든 파일을 root 기준 상대경로 set 으로 반환."""
+    """root 아래의 모든 파일을 root 기준 상대경로 set 으로 반환(임시/잔여물 제외)."""
     result = set()
-    for dirpath, _dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if not _is_excluded_dir(d)]
         for name in filenames:
+            if _is_excluded_file(name):
+                continue
             full = os.path.join(dirpath, name)
             result.add(os.path.relpath(full, root))
     return result
 
 
 def list_relative_dirs(root):
-    """root 아래의 모든 하위 폴더를 root 기준 상대경로 set 으로 반환."""
+    """root 아래의 모든 하위 폴더를 root 기준 상대경로 set 으로 반환(임시 폴더 제외)."""
     result = set()
     for dirpath, dirnames, _filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if not _is_excluded_dir(d)]
         for name in dirnames:
             full = os.path.join(dirpath, name)
             result.add(os.path.relpath(full, root))
