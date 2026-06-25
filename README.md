@@ -57,9 +57,20 @@ Python 표준 라이브러리(tkinter)만 사용하므로 추가 설치 없이 �
 - 원본과 대상이 같은 폴더인 쌍은 건너뜁니다.
 - 복사 시 `copy2`를 사용하여 파일의 수정시간 등 메타데이터를 보존합니다.
 
+## 화면 / 배경
+
+- 프로그램 창은 **정사각형(720 × 720)** 고정 크기입니다.
+- 배경은 `assets/background.png` 그림(곰이 TV 보는 일러스트)을 사용합니다.
+- **배경을 바꾸고 싶다면** 원하는 그림을 `720 × 720` 크기의 PNG로 만들어
+  `assets/background.png` 를 덮어쓰면 됩니다. (그림의 위쪽 절반에 그림을 두고
+  아래쪽은 단색으로 두면 컨트롤 패널과 잘 어울립니다.)
+- 포함된 기본 배경은 `python tools/make_background.py` 로 다시 생성할 수 있습니다.
+
 ## 파일 구성
 
 - `sync_app.py` — 프로그램 본체 (GUI + 동기화 로직)
+- `assets/background.png` — 배경 이미지 (720×720)
+- `tools/make_background.py` — 기본 배경 이미지 생성 스크립트
 - `동기화_실행.bat` — Windows에서 Python으로 더블클릭 실행
-- `build_exe.bat` — 단일 `.exe` 빌드 (PyInstaller)
+- `build_exe.bat` — 단일 `.exe` 빌드 (PyInstaller, 배경 이미지 포함)
 - `README.md` — 이 설명서

@@ -13,6 +13,7 @@
 """
 
 import os
+import sys
 import shutil
 import threading
 import queue
@@ -24,6 +25,22 @@ from tkinter import ttk, filedialog, messagebox
 
 # 설정 파일 (등록한 폴더 쌍과 옵션을 기억)
 CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".folder_sync_config.json")
+
+# 창 크기 (정사각형). 배경 이미지도 이 크기로 맞춰져 있다.
+WIN_SIZE = 720
+
+# 색상 테마 (배경 이미지의 보라색과 맞춤)
+BG_PURPLE = "#281438"
+PANEL_BG = "#2a1640"
+TEXT_BG = "#1c0f2b"
+FG = "#f0e8f5"
+ACCENT = "#c8403a"
+
+
+def resource_path(rel):
+    """개발 실행과 PyInstaller(--onefile) 실행 모두에서 리소스 경로를 찾는다."""
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, rel)
 
 # 파일 동일 여부를 판단할 때 수정시간 오차 허용치(초).
 # 파일시스템(FAT/NTFS) 간 시간 해상도 차이로 인한 오탐을 막기 위함.
@@ -140,8 +157,10 @@ class App:
     def __init__(self, root):
         self.root = root
         root.title("폴더 동기화 (SSD → D드라이브)")
-        root.geometry("820x620")
-        root.minsize(720, 540)
+        # 정사각형 고정 창
+        root.geometry(f"{WIN_SIZE}x{WIN_SIZE}")
+        root.resizable(False, False)
+        root.configure(bg=BG_PURPLE)
 
         cfg = load_config()
 
@@ -161,68 +180,118 @@ class App:
         self._refresh_tree()
         self.root.after(100, self._drain_log_queue)
 
+    # ---------------- 다크 테마 스타일 ----------------
+    def _setup_style(self):
+        style = ttk.Style()
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        style.configure("Sync.Treeview",
+                        background=TEXT_BG, fieldbackground=TEXT_BG,
+                        foreground=FG, borderwidth=0, rowheight=22)
+        style.map("Sync.Treeview", background=[("selected", ACCENT)])
+        style.configure("Sync.Treeview.Heading",
+                        background=PANEL_BG, foreground=FG, borderwidth=1)
+        style.configure("Sync.Horizontal.TProgressbar",
+                        troughcolor=TEXT_BG, background=ACCENT)
+
+    def _btn(self, parent, text, command, accent=False):
+        return tk.Button(
+            parent, text=text, command=command,
+            bg=ACCENT if accent else "#3c2456", fg="white",
+            activebackground="#e0524c" if accent else "#4d2f6e",
+            activeforeground="white", relief="flat", bd=0,
+            padx=10, pady=4, cursor="hand2",
+            font=("", 9, "bold" if accent else "normal"))
+
     # ---------------- UI 구성 ----------------
     def _build_ui(self):
-        pad = {"padx": 8, "pady": 4}
+        self._setup_style()
+
+        # 배경 캔버스 + 이미지
+        self.canvas = tk.Canvas(self.root, width=WIN_SIZE, height=WIN_SIZE,
+                                highlightthickness=0, bg=BG_PURPLE)
+        self.canvas.pack(fill="both", expand=True)
+
+        self.bg_img = None
+        try:
+            self.bg_img = tk.PhotoImage(file=resource_path("assets/background.png"))
+            self.canvas.create_image(0, 0, anchor="nw", image=self.bg_img)
+        except Exception:
+            # 이미지가 없어도 보라색 배경으로 동작
+            pass
+
+        self.canvas.create_text(
+            24, 24, anchor="nw", text="폴더 동기화",
+            fill=FG, font=("", 16, "bold"))
+        self.canvas.create_text(
+            24, 52, anchor="nw", text="SSD → D드라이브  ·  버튼 하나로 한꺼번에",
+            fill="#c9b8d8", font=("", 9))
+
+        # 컨트롤 패널 (그림 아래쪽 보라 영역에 얹는다)
+        panel = tk.Frame(self.canvas, bg=PANEL_BG)
+        self.canvas.create_window(WIN_SIZE // 2, 372, anchor="n",
+                                  window=panel, width=688)
+
+        pad = {"padx": 6, "pady": 3}
+
+        tk.Label(panel, text="동기화할 폴더 쌍 (원본 → 대상)",
+                 bg=PANEL_BG, fg=FG, font=("", 9, "bold")).pack(
+            anchor="w", padx=6, pady=(6, 0))
 
         # 폴더 쌍 목록 (Treeview)
-        ttk.Label(self.root, text="동기화할 폴더 쌍 목록 (원본 → 대상)").pack(
-            anchor="w", padx=8, pady=(8, 0))
-
-        treefrm = ttk.Frame(self.root)
-        treefrm.pack(fill="both", expand=False, padx=8, pady=4)
-
+        treefrm = tk.Frame(panel, bg=PANEL_BG)
+        treefrm.pack(fill="x", **pad)
         self.tree = ttk.Treeview(
-            treefrm, columns=("src", "dst"), show="headings", height=7)
+            treefrm, columns=("src", "dst"), show="headings", height=3,
+            style="Sync.Treeview")
         self.tree.heading("src", text="원본 폴더 (SSD)")
         self.tree.heading("dst", text="대상 폴더 (D드라이브)")
-        self.tree.column("src", width=370, anchor="w")
-        self.tree.column("dst", width=370, anchor="w")
+        self.tree.column("src", width=320, anchor="w")
+        self.tree.column("dst", width=320, anchor="w")
         self.tree.pack(side="left", fill="both", expand=True)
         tsb = ttk.Scrollbar(treefrm, command=self.tree.yview)
         tsb.pack(side="right", fill="y")
         self.tree.configure(yscrollcommand=tsb.set)
 
         # 목록 조작 버튼
-        listbtns = ttk.Frame(self.root)
+        listbtns = tk.Frame(panel, bg=PANEL_BG)
         listbtns.pack(fill="x", **pad)
-        ttk.Button(listbtns, text="폴더 쌍 추가",
-                   command=self.add_pair).pack(side="left", padx=4)
-        ttk.Button(listbtns, text="선택한 쌍 수정",
-                   command=self.edit_pair).pack(side="left", padx=4)
-        ttk.Button(listbtns, text="선택한 쌍 제거",
-                   command=self.remove_pair).pack(side="left", padx=4)
-        ttk.Button(listbtns, text="전체 비우기",
-                   command=self.clear_pairs).pack(side="left", padx=4)
+        self._btn(listbtns, "폴더 쌍 추가", self.add_pair).pack(side="left", padx=3)
+        self._btn(listbtns, "선택 수정", self.edit_pair).pack(side="left", padx=3)
+        self._btn(listbtns, "선택 제거", self.remove_pair).pack(side="left", padx=3)
+        self._btn(listbtns, "전체 비우기", self.clear_pairs).pack(side="left", padx=3)
 
         # 옵션
-        opt = ttk.Frame(self.root)
+        opt = tk.Frame(panel, bg=PANEL_BG)
         opt.pack(fill="x", **pad)
-        ttk.Checkbutton(
-            opt, text="원본에서 삭제된 파일을 대상에서도 삭제",
-            variable=self.delete_var).pack(side="left", padx=4)
-        ttk.Checkbutton(
-            opt, text="삭제 전 확인",
-            variable=self.confirm_delete_var).pack(side="left", padx=4)
+        ck = dict(bg=PANEL_BG, fg=FG, selectcolor=TEXT_BG,
+                  activebackground=PANEL_BG, activeforeground=FG)
+        tk.Checkbutton(opt, text="원본에서 삭제된 파일을 대상에서도 삭제",
+                       variable=self.delete_var, **ck).pack(side="left", padx=3)
+        tk.Checkbutton(opt, text="삭제 전 확인",
+                       variable=self.confirm_delete_var, **ck).pack(side="left", padx=3)
 
         # 실행 버튼
-        btns = ttk.Frame(self.root)
+        btns = tk.Frame(panel, bg=PANEL_BG)
         btns.pack(fill="x", **pad)
-        self.preview_btn = ttk.Button(
-            btns, text="미리보기 (변경사항 확인)", command=self.preview)
-        self.preview_btn.pack(side="left", padx=4)
-        self.sync_btn = ttk.Button(
-            btns, text="전체 동기화 시작", command=self.start_sync)
-        self.sync_btn.pack(side="left", padx=4)
+        self.preview_btn = self._btn(btns, "미리보기", self.preview)
+        self.preview_btn.pack(side="left", padx=3)
+        self.sync_btn = self._btn(btns, "전체 동기화 시작", self.start_sync, accent=True)
+        self.sync_btn.pack(side="left", padx=3)
 
         # 진행 표시줄
-        self.progress = ttk.Progressbar(self.root, mode="determinate")
-        self.progress.pack(fill="x", padx=8, pady=4)
+        self.progress = ttk.Progressbar(panel, mode="determinate",
+                                        style="Sync.Horizontal.TProgressbar")
+        self.progress.pack(fill="x", padx=6, pady=3)
 
         # 로그 영역
-        logfrm = ttk.Frame(self.root)
-        logfrm.pack(fill="both", expand=True, padx=8, pady=4)
-        self.log = tk.Text(logfrm, wrap="none", height=14, state="disabled")
+        logfrm = tk.Frame(panel, bg=PANEL_BG)
+        logfrm.pack(fill="both", expand=True, padx=6, pady=3)
+        self.log = tk.Text(logfrm, wrap="none", height=4, state="disabled",
+                           bg=TEXT_BG, fg=FG, insertbackground=FG,
+                           relief="flat", bd=0, font=("Consolas", 9))
         self.log.pack(side="left", fill="both", expand=True)
         sb = ttk.Scrollbar(logfrm, command=self.log.yview)
         sb.pack(side="right", fill="y")
@@ -230,8 +299,8 @@ class App:
 
         # 상태 표시줄
         self.status_var = tk.StringVar(value="대기 중")
-        ttk.Label(self.root, textvariable=self.status_var, relief="sunken",
-                  anchor="w").pack(fill="x", side="bottom")
+        tk.Label(panel, textvariable=self.status_var, bg=TEXT_BG, fg="#bfa9d4",
+                 anchor="w").pack(fill="x", padx=6, pady=(0, 6))
 
     # ---------------- 폴더 쌍 관리 ----------------
     def _refresh_tree(self):
