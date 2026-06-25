@@ -1,0 +1,50 @@
+name: Build Windows EXE
+
+# sync_app.py 가 바뀌어 푸시되거나, 수동 실행 시 Windows 용 단일 exe 를 빌드해
+# 아티팩트로 올리고, "exe-latest" 릴리스에 첨부해 누구나 내려받을 수 있게 한다.
+on:
+  push:
+    branches: [ "claude/affectionate-lamport-e6xmq6" ]
+    paths:
+      - "sync_app.py"
+      - "assets/**"
+      - ".github/workflows/build-exe.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyInstaller
+        run: python -m pip install --upgrade pip pyinstaller
+
+      - name: Build single-file exe
+        run: >
+          pyinstaller --onefile --windowed --name FolderSync
+          --add-data "assets;assets" sync_app.py
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FolderSync-exe
+          path: dist/FolderSync.exe
+
+      - name: Publish to "exe-latest" release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: exe-latest
+          name: 폴더 동기화 - 최신 빌드
+          prerelease: true
+          body: |
+            Windows 용 단일 실행 파일입니다. 아래 **FolderSync.exe** 를 내려받아 더블클릭하면 됩니다.
+            (Python 설치 없이 실행됩니다. Windows SmartScreen 경고가 뜨면 '추가 정보 → 실행'을 누르세요.)
+          files: dist/FolderSync.exe
