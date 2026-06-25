@@ -31,13 +31,25 @@ CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".folder_sync_config.json")
 # 창 크기 (정사각형). 배경 이미지도 이 크기로 맞춰져 있다.
 WIN_SIZE = 720
 
-# 색상 테마 (배경 이미지의 보라색과 맞춤)
-BG_PURPLE = "#281438"
-PANEL_BG = "#2a1640"
-TEXT_BG = "#1c0f2b"
-FG = "#f0e8f5"
-ACCENT = "#c8403a"
-WHITE = "#ffffff"
+# 색상 테마 — 밝은 모바일 카드 스타일
+APP_BG = "#E8E8EC"       # 바깥 배경 (연한 회보라)
+CARD = "#FFFFFF"         # 흰색 카드
+CARD_GRAY = "#F1F1F4"    # 연회색 카드(아이콘 버튼 등)
+TEXT = "#1B1B1F"         # 본문(거의 검정)
+SUBT = "#9B9BA1"         # 보조 텍스트 / Off
+DIVIDER = "#ECECEF"      # 구분선
+ORANGE = "#F97316"       # 포인트 오렌지
+NAVBLACK = "#141414"     # 하단 가운데 + 버튼 / 활성 탭
+ICON = "#8A8A8E"         # 아이콘 기본
+ICON_DK = "#2C2C2E"      # 진한 아이콘
+WHITE = "#FFFFFF"
+
+# (구버전 호환용 별칭 — 일부 코드에서 참조)
+BG_PURPLE = APP_BG
+PANEL_BG = CARD
+TEXT_BG = CARD
+FG = TEXT
+ACCENT = ORANGE
 
 # 폰트 (Pretendard, 없으면 시스템 기본 폰트로 대체됨)
 FONT_FAMILY = "Pretendard"
@@ -50,6 +62,19 @@ def make_outline(parent, **kw):
     """자식 위젯을 감싸 흰색 얇은 테두리를 만드는 프레임을 반환한다.
     내부 위젯은 padx=LINE_W, pady=LINE_W 로 pack/grid 하면 된다."""
     return tk.Frame(parent, bg=WHITE, **kw)
+
+
+class _PlainVar:
+    """값만 보관하는 간단한 변수(Tk 비의존). 백그라운드 스레드에서 안전하게 set 가능."""
+
+    def __init__(self, v=""):
+        self._v = v
+
+    def set(self, v):
+        self._v = v
+
+    def get(self):
+        return self._v
 
 
 def resource_path(rel):
@@ -175,7 +200,7 @@ class App:
         # 정사각형 고정 창
         root.geometry(f"{WIN_SIZE}x{WIN_SIZE}")
         root.resizable(False, False)
-        root.configure(bg=BG_PURPLE)
+        root.configure(bg=APP_BG)
 
         cfg = load_config()
 
@@ -203,8 +228,9 @@ class App:
         # 동기화 진행 중 여부 (중복 실행 방지)
         self.busy = False
 
-        # 백그라운드 작업과 통신용 큐
+        # 백그라운드 작업과 통신용 큐 (UI 갱신은 모두 메인 스레드에서 처리)
         self.log_queue = queue.Queue()
+        self._ui_queue = queue.Queue()
 
         self._setup_fonts()
         self._build_ui()
@@ -247,218 +273,327 @@ class App:
                 except Exception:
                     pass
 
-    # ---------------- 다크 테마 스타일 ----------------
+    # ---------------- 라이트 테마 스타일 ----------------
     def _setup_style(self):
         style = ttk.Style()
         try:
             style.theme_use("clam")
         except tk.TclError:
             pass
-        # 트리뷰: 회색 면 대신 보라 배경 + 흰색 얇은 라인
+        # 목록(Treeview): 흰 카드 위 깔끔한 리스트
         style.configure("Sync.Treeview",
-                        background=PANEL_BG, fieldbackground=PANEL_BG,
-                        foreground=FG, borderwidth=0, relief="flat",
-                        rowheight=22, font=self.font_n)
+                        background=CARD, fieldbackground=CARD,
+                        foreground=TEXT, borderwidth=0, relief="flat",
+                        bordercolor=CARD, lightcolor=CARD, darkcolor=CARD,
+                        rowheight=28, font=self.font_n)
         style.map("Sync.Treeview",
-                  background=[("selected", "#43275f")],
-                  foreground=[("selected", WHITE)])
-        style.configure("Sync.Treeview.Heading",
-                        background=PANEL_BG, foreground=WHITE,
-                        relief="flat", borderwidth=0, font=self.font_b)
-        style.map("Sync.Treeview.Heading", background=[("active", "#3a2350")])
-        # 진행 표시줄: 흰색 막대
+                  background=[("selected", "#FFF1E6")],
+                  foreground=[("selected", TEXT)])
+        # 진행 표시줄: 오렌지 막대
         style.configure("Sync.Horizontal.TProgressbar",
-                        troughcolor=PANEL_BG, background=WHITE,
-                        borderwidth=0, lightcolor=WHITE, darkcolor=WHITE)
-        # 스크롤바: 회색 제거, 흰색 얇은 라인 느낌
+                        troughcolor=CARD_GRAY, background=ORANGE,
+                        borderwidth=0, thickness=6,
+                        lightcolor=ORANGE, darkcolor=ORANGE)
         for orient in ("Vertical", "Horizontal"):
             style.configure(f"Sync.{orient}.TScrollbar",
-                            troughcolor=PANEL_BG, background="#5a3f78",
-                            bordercolor=WHITE, arrowcolor=WHITE,
+                            troughcolor=CARD, background="#D6D6DC",
+                            bordercolor=CARD, arrowcolor=SUBT,
                             relief="flat", borderwidth=0)
 
-    def _btn(self, parent, text, command, white_bg=False):
-        """흰색 얇은 테두리 버튼. white_bg=True 면 배경이 흰색."""
-        return tk.Button(
-            parent, text=text, command=command,
-            bg=WHITE if white_bg else PANEL_BG,
-            fg="#201030" if white_bg else WHITE,
-            activebackground="#e9e3f0" if white_bg else "#3a2350",
-            activeforeground="#201030" if white_bg else WHITE,
-            relief="flat", bd=0,
-            highlightthickness=LINE_W, highlightbackground=WHITE,
-            highlightcolor=WHITE,
-            padx=12, pady=4, cursor="hand2", font=self.font_b)
+    # ---------------- 캔버스 그리기 도우미 ----------------
+    def _round_rect(self, x0, y0, x1, y1, r, **kw):
+        pts = [x0 + r, y0, x1 - r, y0, x1, y0, x1, y0 + r, x1, y1 - r,
+               x1, y1, x1 - r, y1, x0 + r, y1, x0, y1, x0, y1 - r,
+               x0, y0 + r, x0, y0]
+        return self.canvas.create_polygon(pts, smooth=True, **kw)
 
-    def _entry(self, parent, var, width=None):
-        return tk.Entry(
-            parent, textvariable=var, width=width,
-            bg=PANEL_BG, fg=WHITE, insertbackground=WHITE,
-            relief="flat", bd=0, highlightthickness=LINE_W,
-            highlightbackground=WHITE, highlightcolor=WHITE, font=self.font_n)
+    def _ln(self, *pts, c=ICON_DK, w=2):
+        return self.canvas.create_line(*pts, fill=c, width=w,
+                                       capstyle="round", joinstyle="round")
 
-    def _check(self, parent, text, var, command=None):
-        return tk.Checkbutton(
-            parent, text=text, variable=var, command=command,
-            bg=PANEL_BG, fg=FG, selectcolor=PANEL_BG,
-            activebackground=PANEL_BG, activeforeground=WHITE,
-            highlightthickness=0, bd=0, font=self.font_n)
+    def _ov(self, x0, y0, x1, y1, c=ICON_DK, w=2, fill=""):
+        return self.canvas.create_oval(x0, y0, x1, y1, outline=c, width=w, fill=fill)
 
-    def _radio(self, parent, text, var, value, command=None):
-        return tk.Radiobutton(
-            parent, text=text, variable=var, value=value, command=command,
-            bg=PANEL_BG, fg=FG, selectcolor=PANEL_BG,
-            activebackground=PANEL_BG, activeforeground=WHITE,
-            highlightthickness=0, bd=0, font=self.font_n)
+    def _bind(self, ids, command, guarded=False):
+        tag = f"clk{ids[0]}"
+        for i in ids:
+            self.canvas.addtag_withtag(tag, i)
+
+        def cb(_e):
+            if guarded and self.busy:
+                return
+            command()
+        self.canvas.tag_bind(tag, "<Button-1>", cb)
+        self.canvas.tag_bind(tag, "<Enter>",
+                             lambda e: self.canvas.configure(cursor="hand2"))
+        self.canvas.tag_bind(tag, "<Leave>",
+                             lambda e: self.canvas.configure(cursor=""))
+        return tag
+
+    # ---------------- 라인 아이콘들 (단색, 얇은 선) ----------------
+    def _ic_folder(self, cx, cy, c):
+        return [self._round_rect(cx - 11, cy - 6, cx + 11, cy + 8, 3,
+                                 outline=c, width=2, fill=""),
+                self._ln(cx - 11, cy - 6, cx - 7, cy - 10, cx - 1, cy - 10,
+                         cx + 1, cy - 6, c=c)]
+
+    def _ic_plus(self, cx, cy, c):
+        return [self._ln(cx, cy - 9, cx, cy + 9, c=c),
+                self._ln(cx - 9, cy, cx + 9, cy, c=c)]
+
+    def _ic_trash(self, cx, cy, c):
+        return [self._ln(cx - 9, cy - 6, cx + 9, cy - 6, c=c),
+                self._ln(cx - 3, cy - 6, cx - 3, cy - 9, cx + 3, cy - 9,
+                         cx + 3, cy - 6, c=c),
+                self._round_rect(cx - 7, cy - 6, cx + 7, cy + 9, 2,
+                                 outline=c, width=2, fill=""),
+                self._ln(cx - 2, cy - 2, cx - 2, cy + 5, c=c),
+                self._ln(cx + 2, cy - 2, cx + 2, cy + 5, c=c)]
+
+    def _ic_search(self, cx, cy, c):
+        return [self._ov(cx - 9, cy - 9, cx + 3, cy + 3, c=c),
+                self._ln(cx + 2, cy + 2, cx + 9, cy + 9, c=c)]
+
+    def _ic_sync(self, cx, cy, c):
+        ids = [self.canvas.create_arc(cx - 9, cy - 9, cx + 9, cy + 9,
+                                      start=55, extent=250, style="arc",
+                                      outline=c, width=2)]
+        ids.append(self._ln(cx + 6, cy - 9, cx + 9, cy - 4, cx + 3, cy - 3, c=c))
+        return ids
+
+    def _ic_clock(self, cx, cy, c):
+        return [self._ov(cx - 9, cy - 9, cx + 9, cy + 9, c=c),
+                self._ln(cx, cy, cx, cy - 5, c=c),
+                self._ln(cx, cy, cx + 5, cy + 2, c=c)]
+
+    def _ic_home(self, cx, cy, c):
+        return [self._ln(cx - 9, cy + 1, cx, cy - 8, cx + 9, cy + 1, c=c),
+                self._ln(cx - 6, cy + 1, cx - 6, cy + 9, cx + 6, cy + 9,
+                         cx + 6, cy + 1, c=c)]
+
+    def _ic_chat(self, cx, cy, c):
+        return [self._round_rect(cx - 9, cy - 8, cx + 9, cy + 4, 4,
+                                 outline=c, width=2, fill=""),
+                self._ln(cx - 3, cy + 4, cx - 6, cy + 9, cx + 1, cy + 4, c=c)]
+
+    def _ic_person(self, cx, cy, c):
+        return [self._ov(cx - 4, cy - 9, cx + 4, cy - 1, c=c),
+                self.canvas.create_arc(cx - 8, cy - 1, cx + 8, cy + 15,
+                                       start=20, extent=140, style="arc",
+                                       outline=c, width=2)]
+
+    def _chevron(self, cx, cy):
+        return [self._ln(cx - 2, cy - 5, cx + 3, cy, cx - 2, cy + 5,
+                         c=SUBT, w=2)]
 
     # ---------------- UI 구성 ----------------
     def _build_ui(self):
         self._setup_style()
+        C = self.canvas = tk.Canvas(self.root, width=WIN_SIZE, height=WIN_SIZE,
+                                    highlightthickness=0, bg=APP_BG)
+        C.pack(fill="both", expand=True)
 
-        # 배경 캔버스 + 이미지
-        self.canvas = tk.Canvas(self.root, width=WIN_SIZE, height=WIN_SIZE,
-                                highlightthickness=0, bg=BG_PURPLE)
-        self.canvas.pack(fill="both", expand=True)
+        # ===== 헤더 =====
+        self._ov(30, 36, 76, 82, c=CARD_GRAY, w=1, fill=CARD_GRAY)
+        self._ic_person(53, 60, ICON)
+        C.create_text(92, 49, anchor="w", text="폴더 동기화",
+                      fill=TEXT, font=self.font_title)
+        self.status_var = _PlainVar("SSD → D드라이브 동기화")
+        self._subtitle_id = C.create_text(
+            92, 74, anchor="w", text=self.status_var.get(),
+            fill=SUBT, font=self.font_small)
+        # 오렌지 동기화 버튼
+        self._orange_id = self._ov(648, 36, 696, 84, c=ORANGE, w=1, fill=ORANGE)
+        sync_ic = self._ic_sync(672, 60, WHITE)
+        self._bind([self._orange_id] + sync_ic, self.start_sync, guarded=True)
 
-        self.bg_img = None
-        try:
-            self.bg_img = tk.PhotoImage(file=resource_path("assets/background.png"))
-            self.canvas.create_image(0, 0, anchor="nw", image=self.bg_img)
-        except Exception:
-            # 이미지가 없어도 보라색 배경으로 동작
-            pass
+        # ===== 빠른 작업 버튼 4개 =====
+        quick = [("원본", self._ic_folder, self.browse_src),
+                 ("대상", self._ic_folder, self.browse_dst),
+                 ("추가", self._ic_plus, self.add_pair),
+                 ("제거", self._ic_trash, self.remove_pair)]
+        qx, qy0, qy1, gap = 24, 100, 182, 14
+        qw = (WIN_SIZE - 2 * qx - 3 * gap) / 4
+        for i, (label, icon, cmd) in enumerate(quick):
+            x = qx + i * (qw + gap)
+            cxc = x + qw / 2
+            rid = self._round_rect(x, qy0, x + qw, qy1, 18, fill=CARD_GRAY, outline="")
+            ic = icon(cxc, 132, ICON_DK)
+            tid = C.create_text(cxc, 165, text=label, fill=TEXT, font=self.font_small)
+            self._bind([rid] + ic + [tid], cmd)
 
-        self.canvas.create_text(
-            24, 22, anchor="nw", text="폴더 동기화",
-            fill=FG, font=self.font_title)
-        self.canvas.create_text(
-            24, 50, anchor="nw", text="SSD → D드라이브  ·  버튼 하나로 한꺼번에",
-            fill="#c9b8d8", font=self.font_small)
+        # ===== 새 폴더 쌍(현재 선택) 카드 =====
+        self._round_rect(24, 196, 696, 258, 16, fill=CARD, outline="")
+        r1 = C.create_rectangle(40, 197, 680, 226, fill=CARD, outline="")
+        sl = C.create_text(46, 212, anchor="w", text="원본", fill=SUBT, font=self.font_small)
+        self._src_val_id = C.create_text(
+            110, 212, anchor="w", text="선택 안 됨", fill=SUBT, font=self.font_n)
+        ch1 = self._chevron(672, 212)
+        self._bind([r1, sl, self._src_val_id] + ch1, self.browse_src)
+        C.create_line(46, 227, 674, 227, fill=DIVIDER)
+        r2 = C.create_rectangle(40, 229, 680, 257, fill=CARD, outline="")
+        dl = C.create_text(46, 243, anchor="w", text="대상", fill=SUBT, font=self.font_small)
+        self._dst_val_id = C.create_text(
+            110, 243, anchor="w", text="선택 안 됨", fill=SUBT, font=self.font_n)
+        ch2 = self._chevron(672, 243)
+        self._bind([r2, dl, self._dst_val_id] + ch2, self.browse_dst)
 
-        # 컨트롤 패널 (그림 아래쪽 보라 영역에 얹는다)
-        panel = tk.Frame(self.canvas, bg=PANEL_BG)
-        self.canvas.create_window(WIN_SIZE // 2, 300, anchor="n",
-                                  window=panel, width=696)
-
-        pad = {"padx": 6, "pady": 2}
-        LBL = dict(bg=PANEL_BG, fg=FG, font=self.font_n)
-
-        # 원본 폴더 선택
-        rows = tk.Frame(panel, bg=PANEL_BG)
-        rows.pack(fill="x", **pad)
-        tk.Label(rows, text="원본 폴더 (SSD)", width=13, anchor="w",
-                 **LBL).pack(side="left")
-        self._entry(rows, self.src_input).pack(
-            side="left", fill="x", expand=True, padx=4)
-        self._btn(rows, "찾아보기", self.browse_src).pack(side="left")
-
-        # 대상 폴더 선택
-        rowd = tk.Frame(panel, bg=PANEL_BG)
-        rowd.pack(fill="x", **pad)
-        tk.Label(rowd, text="대상 폴더 (D드라이브)", width=13, anchor="w",
-                 **LBL).pack(side="left")
-        self._entry(rowd, self.dst_input).pack(
-            side="left", fill="x", expand=True, padx=4)
-        self._btn(rowd, "찾아보기", self.browse_dst).pack(side="left")
-
-        # 목록 추가/제거 버튼
-        listbtns = tk.Frame(panel, bg=PANEL_BG)
-        listbtns.pack(fill="x", **pad)
-        self._btn(listbtns, "＋ 목록에 추가", self.add_pair).pack(side="left", padx=3)
-        self._btn(listbtns, "선택 제거", self.remove_pair).pack(side="left", padx=3)
-        self._btn(listbtns, "전체 비우기", self.clear_pairs).pack(side="left", padx=3)
-        tk.Label(listbtns, text="(목록 항목을 더블클릭하면 위 칸으로 불러와 수정)",
-                 bg=PANEL_BG, fg="#a892c0", font=self.font_small).pack(
-            side="left", padx=6)
-
-        # 폴더 쌍 목록 (Treeview) — 흰색 테두리
-        treebox = tk.Frame(panel, bg=WHITE)
-        treebox.pack(fill="x", **pad)
-        treefrm = tk.Frame(treebox, bg=PANEL_BG)
-        treefrm.pack(fill="both", expand=True, padx=LINE_W, pady=LINE_W)
-        self.tree = ttk.Treeview(
-            treefrm, columns=("src", "dst"), show="headings", height=3,
-            style="Sync.Treeview")
-        self.tree.heading("src", text="원본 폴더 (SSD)")
-        self.tree.heading("dst", text="대상 폴더 (D드라이브)")
-        self.tree.column("src", width=320, anchor="w")
-        self.tree.column("dst", width=320, anchor="w")
-        self.tree.pack(side="left", fill="both", expand=True)
+        # ===== 폴더 목록 카드 =====
+        C.create_text(34, 276, anchor="w", text="동기화 폴더",
+                      fill=SUBT, font=self.font_small)
+        self._count_id = C.create_text(686, 276, anchor="e", text="0개",
+                                       fill=SUBT, font=self.font_small)
+        self._round_rect(24, 288, 696, 380, 16, fill=CARD, outline="")
+        self.tree = ttk.Treeview(C, show="tree", style="Sync.Treeview", height=3)
+        self.tree.column("#0", width=632, anchor="w")
         self.tree.bind("<Double-1>", self.load_selected)
-        tsb = ttk.Scrollbar(treefrm, command=self.tree.yview,
-                            style="Sync.Vertical.TScrollbar")
-        tsb.pack(side="right", fill="y")
-        self.tree.configure(yscrollcommand=tsb.set)
+        C.create_window(34, 296, anchor="nw", window=self.tree,
+                        width=652, height=76)
 
-        # 옵션
-        opt = tk.Frame(panel, bg=PANEL_BG)
-        opt.pack(fill="x", **pad)
-        self._check(opt, "원본에서 삭제된 파일을 대상에서도 삭제",
-                    self.delete_var, command=self._persist).pack(side="left")
-        self._check(opt, "삭제 전 확인",
-                    self.confirm_delete_var, command=self._persist).pack(side="left", padx=8)
+        # ===== 설정 카드 =====
+        self._round_rect(24, 396, 696, 520, 16, fill=CARD, outline="")
+        self._del_val_id = self._setting_row(
+            396, "원본에서 삭제된 파일도 삭제", self._toggle_delete, divider=True)
+        self._cfm_val_id = self._setting_row(
+            437, "삭제 전 확인", self._toggle_confirm, divider=True)
+        self._sched_val_id = self._setting_row(
+            478, "예약 실행", self._open_schedule, chevron=True)
 
-        # 예약 실행
-        sch = tk.Frame(panel, bg=PANEL_BG)
-        sch.pack(fill="x", **pad)
-        self._check(sch, "예약 실행", self.sched_enabled,
-                    command=self._persist).pack(side="left")
-        self._radio(sch, "반복", self.sched_mode, "interval",
-                    command=self._persist).pack(side="left", padx=(8, 0))
-        self._entry(sch, self.sched_interval, width=4).pack(side="left")
-        tk.Label(sch, text="분마다", **LBL).pack(side="left", padx=(2, 0))
-        self._radio(sch, "매일", self.sched_mode, "daily",
-                    command=self._persist).pack(side="left", padx=(10, 0))
-        self._entry(sch, self.sched_time, width=6).pack(side="left")
-        tk.Label(sch, text="에", **LBL).pack(side="left", padx=(2, 0))
-        self.sched_status_var = tk.StringVar(value="")
-        tk.Label(sch, textvariable=self.sched_status_var,
-                 bg=PANEL_BG, fg="#a892c0", font=self.font_small).pack(
-            side="right")
-
-        # 실행 버튼
-        btns = tk.Frame(panel, bg=PANEL_BG)
-        btns.pack(fill="x", **pad)
-        self.preview_btn = self._btn(btns, "미리보기", self.preview)
-        self.preview_btn.pack(side="left", padx=3)
-        self.sync_btn = self._btn(btns, "전체 동기화 시작", self.start_sync,
-                                  white_bg=True)
-        self.sync_btn.pack(side="left", padx=3)
-
-        # 진행 표시줄 — 흰색 테두리
-        progbox = tk.Frame(panel, bg=WHITE)
-        progbox.pack(fill="x", padx=6, pady=2)
-        self.progress = ttk.Progressbar(progbox, mode="determinate",
+        # ===== 진행 표시줄 + 상태 + 로그 =====
+        self.progress = ttk.Progressbar(C, mode="determinate",
                                         style="Sync.Horizontal.TProgressbar")
-        self.progress.pack(fill="x", padx=LINE_W, pady=LINE_W)
+        C.create_window(360, 536, window=self.progress, width=672, height=6)
 
-        # 로그 영역 — 흰색 테두리
-        logbox = tk.Frame(panel, bg=WHITE)
-        logbox.pack(fill="both", expand=True, padx=6, pady=2)
-        logfrm = tk.Frame(logbox, bg=PANEL_BG)
-        logfrm.pack(fill="both", expand=True, padx=LINE_W, pady=LINE_W)
-        self.log = tk.Text(logfrm, wrap="none", height=3, state="disabled",
-                           bg=PANEL_BG, fg=FG, insertbackground=FG,
+        self._round_rect(24, 548, 696, 612, 14, fill=CARD, outline="")
+        self.log = tk.Text(C, wrap="none", height=3, state="disabled",
+                           bg=CARD, fg=TEXT, insertbackground=TEXT,
                            relief="flat", bd=0, highlightthickness=0,
                            font=self.font_mono)
-        self.log.pack(side="left", fill="both", expand=True)
-        sb = ttk.Scrollbar(logfrm, command=self.log.yview,
-                           style="Sync.Vertical.TScrollbar")
-        sb.pack(side="right", fill="y")
-        self.log.configure(yscrollcommand=sb.set)
+        C.create_window(36, 556, anchor="nw", window=self.log,
+                        width=648, height=50)
 
-        # 상태 표시줄
-        self.status_var = tk.StringVar(value="대기 중")
-        tk.Label(panel, textvariable=self.status_var, bg=PANEL_BG, fg="#bfa9d4",
-                 anchor="w", font=self.font_small).pack(fill="x", padx=6, pady=(2, 6))
+        # ===== 하단 내비게이션 =====
+        self._build_nav()
+
+        self._refresh_selection_labels()
+        self._update_sched_status()
+
+    def _setting_row(self, y, title, command, divider=False, chevron=False):
+        """설정 카드의 한 줄을 그리고, 우측 값 텍스트 id 를 돌려준다."""
+        C = self.canvas
+        hit = C.create_rectangle(40, y + 1, 680, y + 40, fill=CARD, outline="")
+        t = C.create_text(46, y + 20, anchor="w", text=title,
+                          fill=TEXT, font=self.font_n)
+        vx = 648 if chevron else 674
+        val = C.create_text(vx, y + 20, anchor="e", text="꺼짐",
+                            fill=SUBT, font=self.font_n)
+        ids = [hit, t, val]
+        if chevron:
+            ids += self._chevron(674, y + 20)
+        self._bind(ids, command)
+        if divider:
+            C.create_line(46, y + 40, 674, y + 40, fill=DIVIDER)
+        return val
+
+    def _build_nav(self):
+        C = self.canvas
+        y = 660
+        items = [("미리보기", self._ic_search, self.preview, 70),
+                 ("예약", self._ic_clock, self._open_schedule, 178),
+                 ("동기화", self._ic_sync, self.start_sync, 542),
+                 ("비우기", self._ic_trash, self.clear_pairs, 650)]
+        for label, icon, cmd, x in items:
+            ic = icon(x, y, ICON)
+            tid = C.create_text(x, y + 24, text=label, fill=SUBT, font=self.font_small)
+            self._bind(ic + [tid], cmd, guarded=(cmd in (self.preview, self.start_sync)))
+        # 가운데 큰 + 버튼 (추가)
+        plus_bg = self._ov(330, y - 28, 390, y + 32, c=NAVBLACK, w=1, fill=NAVBLACK)
+        plus_ic = self._ic_plus(360, y + 2, WHITE)
+        self._bind([plus_bg] + plus_ic, self.add_pair)
+
+    # ---------------- 예약 설정 팝업 ----------------
+    def _open_schedule(self):
+        if getattr(self, "_sched_win", None) is not None:
+            try:
+                if self._sched_win.winfo_exists():
+                    self._sched_win.lift()
+                    return
+            except tk.TclError:
+                pass
+        win = tk.Toplevel(self.root)
+        self._sched_win = win
+        win.title("예약 설정")
+        win.configure(bg=CARD)
+        win.resizable(False, False)
+        win.transient(self.root)
+
+        def L(parent, text, **kw):
+            kw.setdefault("fg", TEXT)
+            kw.setdefault("font", self.font_n)
+            return tk.Label(parent, text=text, bg=CARD, **kw)
+
+        def E(var, width):
+            return tk.Entry(win, textvariable=var, width=width, bg=CARD_GRAY,
+                            fg=TEXT, relief="flat", bd=0, highlightthickness=1,
+                            highlightbackground=DIVIDER, highlightcolor=ORANGE,
+                            font=self.font_n)
+
+        def R(text, value):
+            return tk.Radiobutton(win, text=text, variable=self.sched_mode,
+                                  value=value, bg=CARD, fg=TEXT, selectcolor=CARD,
+                                  activebackground=CARD, font=self.font_n)
+
+        pad = dict(padx=16)
+        tk.Checkbutton(win, text="예약 실행 사용", variable=self.sched_enabled,
+                       bg=CARD, fg=TEXT, selectcolor=CARD, activebackground=CARD,
+                       font=self.font_b).grid(row=0, column=0, columnspan=3,
+                                              sticky="w", pady=(16, 6), **pad)
+        R("반복", "interval").grid(row=1, column=0, sticky="w", **pad)
+        E(self.sched_interval, 5).grid(row=1, column=1, sticky="w")
+        L(win, "분마다").grid(row=1, column=2, sticky="w")
+        R("매일", "daily").grid(row=2, column=0, sticky="w", pady=6, **pad)
+        E(self.sched_time, 7).grid(row=2, column=1, sticky="w")
+        L(win, "에 (HH:MM)").grid(row=2, column=2, sticky="w")
+        L(win, "※ 무인 운영 시 ‘삭제 전 확인’을 꺼 두세요.",
+          fg=SUBT, font=self.font_small).grid(
+            row=3, column=0, columnspan=3, sticky="w", pady=(8, 4), **pad)
+
+        def save():
+            self._persist()
+            self._update_sched_status()
+            win.destroy()
+            self._sched_win = None
+
+        tk.Button(win, text="저장", command=save, bg=NAVBLACK, fg=WHITE,
+                  relief="flat", bd=0, padx=18, pady=6, cursor="hand2",
+                  font=self.font_b).grid(row=4, column=0, columnspan=3,
+                                         sticky="e", padx=16, pady=(4, 16))
+        win.bind("<Destroy>", lambda e: setattr(self, "_sched_win", None))
 
     # ---------------- 폴더 선택 / 쌍 관리 ----------------
+    @staticmethod
+    def _short(path, n=58):
+        if len(path) <= n:
+            return path
+        return "…" + path[-(n - 1):]
+
+    def _refresh_selection_labels(self):
+        s = self.src_input.get().strip()
+        d = self.dst_input.get().strip()
+        self.canvas.itemconfig(self._src_val_id,
+                               text=self._short(s) if s else "선택 안 됨",
+                               fill=TEXT if s else SUBT)
+        self.canvas.itemconfig(self._dst_val_id,
+                               text=self._short(d) if d else "선택 안 됨",
+                               fill=TEXT if d else SUBT)
+
     def browse_src(self):
         p = filedialog.askdirectory(
             title="원본 폴더(SSD) 선택",
             initialdir=self.src_input.get() or os.path.expanduser("~"))
         if p:
             self.src_input.set(p)
+            self._refresh_selection_labels()
 
     def browse_dst(self):
         p = filedialog.askdirectory(
@@ -466,11 +601,16 @@ class App:
             initialdir=self.dst_input.get() or os.path.expanduser("~"))
         if p:
             self.dst_input.set(p)
+            self._refresh_selection_labels()
 
     def _refresh_tree(self):
         self.tree.delete(*self.tree.get_children())
         for src, dst in self.pairs:
-            self.tree.insert("", "end", values=(src, dst))
+            name = os.path.basename(src.rstrip("/\\")) or src
+            self.tree.insert("", "end",
+                             text=f"  {name}   →   {self._short(dst, 40)}")
+        if hasattr(self, "_count_id"):
+            self.canvas.itemconfig(self._count_id, text=f"{len(self.pairs)}개")
 
     def add_pair(self):
         src = self.src_input.get().strip()
@@ -488,9 +628,10 @@ class App:
         self._persist()
         self.src_input.set("")
         self.dst_input.set("")
+        self._refresh_selection_labels()
 
     def load_selected(self, event=None):
-        """목록에서 더블클릭한 쌍을 위 입력칸으로 불러오고 목록에서 제거(수정용)."""
+        """목록에서 더블클릭한 쌍을 위 칸으로 불러오고 목록에서 제거(수정용)."""
         sel = self.tree.selection()
         if not sel:
             return
@@ -501,6 +642,7 @@ class App:
         del self.pairs[idx]
         self._refresh_tree()
         self._persist()
+        self._refresh_selection_labels()
 
     def remove_pair(self):
         sel = self.tree.selection()
@@ -520,6 +662,23 @@ class App:
             self.pairs = []
             self._refresh_tree()
             self._persist()
+
+    # ---------------- 설정 토글 ----------------
+    def _toggle_delete(self):
+        self.delete_var.set(not self.delete_var.get())
+        self._persist()
+        self._refresh_setting_labels()
+
+    def _toggle_confirm(self):
+        self.confirm_delete_var.set(not self.confirm_delete_var.get())
+        self._persist()
+        self._refresh_setting_labels()
+
+    def _refresh_setting_labels(self):
+        for vid, on in ((self._del_val_id, self.delete_var.get()),
+                        (self._cfm_val_id, self.confirm_delete_var.get())):
+            self.canvas.itemconfig(vid, text="켜짐" if on else "꺼짐",
+                                   fill=ORANGE if on else SUBT)
 
     def _persist(self):
         try:
@@ -570,19 +729,27 @@ class App:
             return False
 
     def _update_sched_status(self):
+        # 설정 카드의 다른 값들도 함께 최신화
+        self._refresh_setting_labels()
         if not self.sched_enabled.get():
-            self.sched_status_var.set("예약 꺼짐")
-            return
-        if self.sched_mode.get() == "interval":
-            self.sched_status_var.set(
-                f"예약 켜짐 · {self.sched_interval.get()}분마다")
+            text, color = "꺼짐", SUBT
+        elif self.sched_mode.get() == "interval":
+            text, color = f"{self.sched_interval.get()}분마다", ORANGE
         else:
-            self.sched_status_var.set(
-                f"예약 켜짐 · 매일 {self.sched_time.get().strip()}")
+            text, color = f"매일 {self.sched_time.get().strip()}", ORANGE
+        self.canvas.itemconfig(self._sched_val_id, text=text, fill=color)
 
-    # ---------------- 로그 ----------------
+    # ---------------- 로그 / 스레드→UI 전달 ----------------
     def log_msg(self, msg):
         self.log_queue.put(msg)
+
+    def _ui(self, fn):
+        """백그라운드 스레드에서 UI 갱신을 메인 스레드에 위임한다."""
+        self._ui_queue.put(fn)
+
+    def set_status(self, text):
+        self.status_var.set(text)
+        self._ui(lambda: self.canvas.itemconfig(self._subtitle_id, text=text))
 
     def _drain_log_queue(self):
         try:
@@ -592,6 +759,15 @@ class App:
                 self.log.insert("end", msg + "\n")
                 self.log.see("end")
                 self.log.configure(state="disabled")
+        except queue.Empty:
+            pass
+        try:
+            while True:
+                fn = self._ui_queue.get_nowait()
+                try:
+                    fn()
+                except Exception:
+                    pass
         except queue.Empty:
             pass
         self.root.after(100, self._drain_log_queue)
@@ -623,7 +799,7 @@ class App:
         pairs = self._valid_pairs()
         if pairs is None:
             return
-        self.status_var.set("변경사항 분석 중...")
+        self.set_status("변경사항 분석 중...")
         self._set_buttons(False)
         threading.Thread(target=self._preview_worker, args=(pairs,),
                          daemon=True).start()
@@ -650,7 +826,7 @@ class App:
             self.log_msg("")
             self.log_msg(f"### 전체 합계: 추가 {tot_copy} / 변경 {tot_update} / "
                          f"건너뜀 {tot_skip} / 삭제 {tot_delete}")
-            self.status_var.set("미리보기 완료")
+            self.set_status("미리보기 완료")
         finally:
             self._set_buttons(True)
 
@@ -668,12 +844,16 @@ class App:
                 messagebox.showwarning("경고", "동기화할 유효한 폴더 쌍이 없습니다.")
             return
         self.busy = True
-        self.status_var.set("변경사항 분석 중...")
+        self.set_status("변경사항 분석 중...")
         self._set_buttons(False)
-        threading.Thread(target=self._sync_worker, args=(pairs,),
+        # Tk 변수는 메인 스레드에서 미리 읽어 일반 값으로 워커에 전달
+        delete_enabled = self.delete_var.get()
+        confirm_delete = self.confirm_delete_var.get()
+        threading.Thread(target=self._sync_worker,
+                         args=(pairs, delete_enabled, confirm_delete),
                          daemon=True).start()
 
-    def _sync_worker(self, pairs):
+    def _sync_worker(self, pairs, delete_enabled, confirm_delete):
         try:
             # 1) 모든 쌍의 계획을 먼저 세운다 (진행률 총량 계산 + 삭제 확인용)
             plans = []
@@ -693,8 +873,8 @@ class App:
 
             # 2) 삭제 여부 결정 (전체에 대해 한 번만 확인)
             do_delete = False
-            if self.delete_var.get() and all_deletes:
-                if self.confirm_delete_var.get():
+            if delete_enabled and all_deletes:
+                if confirm_delete:
                     do_delete = self._ask_delete([rel for _p, rel in all_deletes])
                 else:
                     do_delete = True
@@ -757,11 +937,11 @@ class App:
             self.log_msg(f"===== 완료 ({datetime.now():%Y-%m-%d %H:%M:%S}) =====")
             self.log_msg(f"추가 {copied} / 변경 {updated} / 건너뜀 {tot_skip} / "
                          f"삭제 {deleted} / 오류 {errors}")
-            self.status_var.set(
+            self.set_status(
                 f"완료: 추가 {copied}, 변경 {updated}, 삭제 {deleted}, 오류 {errors}")
         except Exception as e:
             self.log_msg(f"[치명적 오류] {e}")
-            self.status_var.set("오류로 중단됨")
+            self.set_status("오류로 중단됨")
         finally:
             self.busy = False
             self._set_buttons(True)
@@ -779,25 +959,21 @@ class App:
             result["ok"] = messagebox.askyesno("삭제 확인", msg)
             event.set()
 
-        self.root.after(0, ask)
+        self._ui(ask)
         event.wait()
         return result["ok"]
 
-    # ---------------- UI 상태 헬퍼 (스레드 안전) ----------------
+    # ---------------- UI 상태 헬퍼 (스레드 안전, 메인 스레드에서 실행) ----------------
     def _set_buttons(self, enabled):
-        def apply():
-            state = "normal" if enabled else "disabled"
-            self.sync_btn.configure(state=state)
-            self.preview_btn.configure(state=state)
-        self.root.after(0, apply)
+        # 동기화 중에는 오렌지 버튼을 흐리게 표시 (실제 차단은 busy 플래그가 담당)
+        self._ui(lambda: self.canvas.itemconfig(
+            self._orange_id, fill=ORANGE if enabled else "#F8C49B"))
 
     def _set_progress_max(self, total):
-        def apply():
-            self.progress.configure(maximum=max(total, 1), value=0)
-        self.root.after(0, apply)
+        self._ui(lambda: self.progress.configure(maximum=max(total, 1), value=0))
 
     def _set_progress(self, value):
-        self.root.after(0, lambda: self.progress.configure(value=value))
+        self._ui(lambda: self.progress.configure(value=value))
 
 
 def main():

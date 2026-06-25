@@ -30,9 +30,10 @@ echo [2/2] exe 빌드 중... (시간이 조금 걸립니다)
 REM  --onefile     : 하나의 exe로
 REM  --windowed    : 콘솔 창 없이 GUI만 표시
 REM  --name        : 결과 파일 이름
-REM  --add-data    : 배경 이미지를 exe 안에 포함 (Windows 구분자는 ; )
-%PYEXE% -m PyInstaller --onefile --windowed --name "폴더동기화" ^
-    --add-data "assets\background.png;assets" sync_app.py
+REM  assets 폴더(글꼴 등)가 있으면 exe 안에 함께 포함 (Windows 구분자는 ; )
+set ADDDATA=
+if exist "assets\*" set ADDDATA=--add-data "assets;assets"
+%PYEXE% -m PyInstaller --onefile --windowed --name "폴더동기화" %ADDDATA% sync_app.py
 if errorlevel 1 (
     echo [오류] 빌드에 실패했습니다.
     pause
