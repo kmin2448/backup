@@ -45,9 +45,10 @@ BTN_HOVER = "#DEE0E6"
 DISABLED = "#B9BBC2"
 DISABLED_BG = "#ECECEF"
 
-# 폰트 (Pretendard, 없으면 시스템 기본 폰트로 대체됨). 본문 16pt.
+# 폰트 (Pretendard, 없으면 시스템 기본 폰트로 대체됨).
+# 세로 스크롤 없이 한 화면에 들어오도록 본문 13pt 로 조정.
 FONT_FAMILY = "Pretendard"
-BASE_SIZE = 16
+BASE_SIZE = 12
 
 # 파일 동일 여부를 판단할 때 수정시간 오차 허용치(초).
 MTIME_TOLERANCE = 2.0
@@ -273,16 +274,12 @@ class App:
         self._refresh_tree()
         self._update_sched_status()
 
-        # 창 크기를 화면에 맞춰 제한 (내용이 길면 스크롤)
+        # 창 크기를 내용에 딱 맞춰 세로 스크롤이 생기지 않도록 한다.
         root.update_idletasks()
-        main = self._canvas.nametowidget(self._canvas.itemcget(self._main_win, "window"))
-        req_w = main.winfo_reqwidth()
-        req_h = main.winfo_reqheight()
-        sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
-        w = min(req_w + 24, 860, int(sw * 0.7))
-        h = min(req_h + 4, int(sh * 0.88))
-        root.geometry(f"{max(w, 540)}x{max(h, 520)}")
-        root.minsize(540, 520)
+        w = min(root.winfo_reqwidth(), 820)
+        h = root.winfo_reqheight()
+        root.geometry(f"{max(w, 520)}x{h}")
+        root.minsize(520, 460)
 
         self.root.after(100, self._drain_queues)
         self.root.after(1000, self._schedule_tick)
@@ -298,9 +295,9 @@ class App:
                 pass
         self.font_n = (FONT_FAMILY, BASE_SIZE)
         self.font_b = (FONT_FAMILY, BASE_SIZE, "bold")
-        self.font_title = (FONT_FAMILY, 22, "bold")
-        self.font_small = (FONT_FAMILY, 12)
-        self.font_log = (FONT_FAMILY, 12)
+        self.font_title = (FONT_FAMILY, 16, "bold")
+        self.font_small = (FONT_FAMILY, 11)
+        self.font_log = (FONT_FAMILY, 11)
         self.tree_font = tkfont.Font(family=FONT_FAMILY, size=BASE_SIZE)
 
     def _load_bundled_font(self):
@@ -335,16 +332,8 @@ class App:
                         background="#CFD2D8", bordercolor=CARD, arrowcolor=MUTED,
                         relief="flat", borderwidth=0)
 
-    def _on_wheel(self, event):
-        if getattr(event, "num", None) == 4:
-            self._canvas.yview_scroll(-3, "units")
-        elif getattr(event, "num", None) == 5:
-            self._canvas.yview_scroll(3, "units")
-        else:
-            self._canvas.yview_scroll(int(-event.delta / 120) * 3, "units")
-
     # ---------------- 위젯 헬퍼 ----------------
-    def _card(self, parent, pady=(0, 12)):
+    def _card(self, parent, pady=(0, 8)):
         outer = tk.Frame(parent, bg=BORDER)
         outer.pack(fill="x", pady=pady)
         inner = tk.Frame(outer, bg=CARD)
@@ -362,7 +351,7 @@ class App:
                       font=self.font_b if (primary or danger) else self.font_n,
                       bg=bg, fg=fg, activebackground=hover, activeforeground=fg,
                       disabledforeground=DISABLED, relief="flat", bd=0,
-                      padx=16, pady=9, cursor="hand2",
+                      padx=14, pady=6, cursor="hand2",
                       highlightthickness=0)
         b._bg = bg
         b.bind("<Enter>", lambda e: b["state"] == "normal" and b.configure(bg=hover),
@@ -404,31 +393,13 @@ class App:
 
     # ---------------- UI 구성 ----------------
     def _build_ui(self):
-        # 내용이 화면보다 길어도 잘리지 않도록 세로 스크롤 컨테이너에 담는다.
-        self._canvas = tk.Canvas(self.root, bg=BG, highlightthickness=0)
-        vsb = ttk.Scrollbar(self.root, orient="vertical",
-                            command=self._canvas.yview,
-                            style="Sync.Vertical.TScrollbar")
-        self._canvas.configure(yscrollcommand=vsb.set)
-        vsb.pack(side="right", fill="y")
-        self._canvas.pack(side="left", fill="both", expand=True)
-
-        main = tk.Frame(self._canvas, bg=BG, padx=18, pady=16)
-        self._main_win = self._canvas.create_window((0, 0), window=main, anchor="nw")
-        main.bind("<Configure>",
-                  lambda e: self._canvas.configure(scrollregion=self._canvas.bbox("all")))
-        self._canvas.bind(
-            "<Configure>",
-            lambda e: self._canvas.itemconfigure(self._main_win, width=e.width))
-        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
-            self._canvas.bind_all(seq, self._on_wheel)
+        # 세로 스크롤 없이 한 화면에 모두 들어오도록 직접 배치한다.
+        main = tk.Frame(self.root, bg=BG, padx=16, pady=12)
+        main.pack(fill="both", expand=True)
 
         # 헤더
-        top = tk.Frame(main, bg=BG)
-        top.pack(fill="x", pady=(0, 12))
-        self._label(top, "폴더 동기화", font=self.font_title, bg=BG).pack(anchor="w")
-        self._label(top, "SSD의 파일을 D드라이브로 한 번에 동기화",
-                    font=self.font_small, fg=MUTED, bg=BG).pack(anchor="w")
+        self._label(main, "폴더 동기화", font=self.font_title, bg=BG).pack(
+            anchor="w", pady=(0, 8))
 
         # 폴더 선택 카드
         c = self._card(main)
@@ -453,13 +424,14 @@ class App:
         # 폴더 목록 카드
         c = self._card(main)
         head = tk.Frame(c, bg=CARD)
-        head.pack(fill="x", padx=12, pady=(10, 4))
-        self._label(head, "", font=self.font_small, fg=MUTED).pack(side="left")
-        tk.Label(head, textvariable=self.count_var, font=self.font_small, fg=MUTED,
+        head.pack(fill="x", padx=12, pady=(8, 2))
+        tk.Label(head, textvariable=self.count_var, font=self.font_small, fg=TEXT,
                  bg=CARD).pack(side="left")
+        self._label(head, "항목을 더블클릭하면 위 칸으로 불러와 수정합니다",
+                    font=self.font_small, fg=TEXT).pack(side="right")
         tf = tk.Frame(c, bg=CARD)
         tf.pack(fill="both", expand=True, padx=12)
-        self.tree = ttk.Treeview(tf, show="tree", style="Sync.Treeview", height=5)
+        self.tree = ttk.Treeview(tf, show="tree", style="Sync.Treeview", height=2)
         self.tree.column("#0", width=560, anchor="w")
         self.tree.pack(side="left", fill="both", expand=True)
         self.tree.bind("<Double-1>", self.load_selected)
@@ -467,18 +439,16 @@ class App:
         sb.pack(side="right", fill="y")
         self.tree.configure(yscrollcommand=sb.set)
         lb = tk.Frame(c, bg=CARD)
-        lb.pack(fill="x", padx=12, pady=10)
+        lb.pack(fill="x", padx=12, pady=8)
         self._button(lb, "선택 제거", self.remove_pair,
                      "목록에서 선택한 폴더 쌍을 제거합니다").pack(side="left")
         self._button(lb, "전체 비우기", self.clear_pairs,
                      "동기화 목록을 모두 비웁니다").pack(side="left", padx=(8, 0))
-        self._label(lb, "항목을 더블클릭하면 위 칸으로 불러와 수정합니다",
-                    font=self.font_small, fg=MUTED).pack(side="right")
 
         # 옵션 카드
         c = self._card(main)
         self._label(c, "같은 이름의 파일이 대상에 있을 때",
-                    font=self.font_small, fg=MUTED).pack(anchor="w", padx=10, pady=(10, 2))
+                    font=self.font_b, fg=TEXT).pack(anchor="w", padx=10, pady=(8, 2))
         self._mode_radio(c, "무조건 건너뛰기", "skip").pack(anchor="w", padx=10)
         self._mode_radio(c, "파일 용량 또는 수정일자가 다르면 덮어쓰기", "diff").pack(
             anchor="w", padx=10, pady=(0, 6))
@@ -530,7 +500,7 @@ class App:
 
         # 로그 카드
         c = self._card(main, pady=(0, 8))
-        self.log = tk.Text(c, height=6, font=self.font_log, bg=CARD, fg=TEXT,
+        self.log = tk.Text(c, height=3, font=self.font_log, bg=CARD, fg=TEXT,
                            relief="flat", bd=0, highlightthickness=0, wrap="none",
                            state="disabled")
         self.log.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=8)
