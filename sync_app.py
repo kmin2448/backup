@@ -4,7 +4,7 @@
 폴더 동기화 프로그램 (SSD -> D드라이브)
 
 기능:
-  - 원본(소스) 폴더의 파일을 대상 폴더로 버튼 하나로 동기화
+  - 여러 개의 (원본 -> 대상) 폴더 쌍을 등록해 두고 버튼 하나로 한꺼번에 동기화
   - 동일한 파일(크기 + 수정시간 일치)은 건너뜀
   - 변경되었거나 새로 추가된 파일은 복사/덮어쓰기
   - 원본에서 삭제된 파일은 대상에서도 삭제 (삭제 전 사용자에게 확인)
@@ -22,7 +22,7 @@ from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-# 설정 파일 (마지막에 선택한 폴더 경로를 기억)
+# 설정 파일 (등록한 폴더 쌍과 옵션을 기억)
 CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".folder_sync_config.json")
 
 # 파일 동일 여부를 판단할 때 수정시간 오차 허용치(초).
@@ -82,6 +82,23 @@ def files_identical(src, dst):
     return True
 
 
+def validate_pair(src, dst):
+    """폴더 쌍의 유효성 검사. 문제가 있으면 오류 메시지를, 없으면 None 을 반환."""
+    if not src or not dst:
+        return "원본과 대상 폴더가 모두 지정되어야 합니다."
+    if not os.path.isdir(src):
+        return f"원본 폴더가 존재하지 않습니다: {src}"
+    src_abs = os.path.abspath(src)
+    dst_abs = os.path.abspath(dst)
+    if src_abs == dst_abs:
+        return "원본과 대상이 같은 폴더입니다."
+    if dst_abs.startswith(src_abs + os.sep):
+        return "대상 폴더가 원본 폴더 안에 있을 수 없습니다."
+    if src_abs.startswith(dst_abs + os.sep):
+        return "원본 폴더가 대상 폴더 안에 있을 수 없습니다."
+    return None
+
+
 class SyncPlan:
     """소스/대상을 비교해서 해야 할 작업 목록을 만든다."""
 
@@ -96,7 +113,7 @@ class SyncPlan:
 
     def build(self):
         src_files = list_relative_files(self.src)
-        dst_files = list_relative_files(self.dst)
+        dst_files = list_relative_files(self.dst) if os.path.isdir(self.dst) else set()
 
         for rel in sorted(src_files):
             s = os.path.join(self.src, rel)
@@ -112,9 +129,9 @@ class SyncPlan:
         for rel in sorted(dst_files - src_files):
             self.to_delete.append(rel)
 
-        # 대상에만 존재하는 빈 폴더(원본에 없는 폴더) 정리 대상
+        # 대상에만 존재하는 폴더(원본에 없는 폴더) 정리 대상
         src_dirs = list_relative_dirs(self.src)
-        dst_dirs = list_relative_dirs(self.dst)
+        dst_dirs = list_relative_dirs(self.dst) if os.path.isdir(self.dst) else set()
         # 긴 경로(깊은 폴더)부터 지워야 하므로 역순 정렬
         self.dirs_to_delete = sorted(dst_dirs - src_dirs, reverse=True)
 
@@ -123,43 +140,60 @@ class App:
     def __init__(self, root):
         self.root = root
         root.title("폴더 동기화 (SSD → D드라이브)")
-        root.geometry("760x560")
-        root.minsize(680, 480)
+        root.geometry("820x620")
+        root.minsize(720, 540)
 
         cfg = load_config()
 
-        self.src_var = tk.StringVar(value=cfg.get("src", ""))
-        self.dst_var = tk.StringVar(value=cfg.get("dst", ""))
+        # 등록된 폴더 쌍 목록: [(src, dst), ...]
+        self.pairs = [tuple(p) for p in cfg.get("pairs", []) if len(p) == 2]
+        # 과거 단일 쌍 설정과의 호환
+        if not self.pairs and cfg.get("src") and cfg.get("dst"):
+            self.pairs = [(cfg["src"], cfg["dst"])]
+
         self.delete_var = tk.BooleanVar(value=cfg.get("delete_enabled", True))
         self.confirm_delete_var = tk.BooleanVar(value=cfg.get("confirm_delete", True))
 
         # 백그라운드 작업과 통신용 큐
         self.log_queue = queue.Queue()
-        self.worker = None
 
         self._build_ui()
+        self._refresh_tree()
         self.root.after(100, self._drain_log_queue)
 
     # ---------------- UI 구성 ----------------
     def _build_ui(self):
         pad = {"padx": 8, "pady": 4}
 
-        frm = ttk.Frame(self.root)
-        frm.pack(fill="x", **pad)
+        # 폴더 쌍 목록 (Treeview)
+        ttk.Label(self.root, text="동기화할 폴더 쌍 목록 (원본 → 대상)").pack(
+            anchor="w", padx=8, pady=(8, 0))
 
-        # 소스 폴더
-        ttk.Label(frm, text="원본 폴더 (SSD):").grid(row=0, column=0, sticky="w")
-        ttk.Entry(frm, textvariable=self.src_var, width=70).grid(
-            row=0, column=1, sticky="we", padx=4)
-        ttk.Button(frm, text="찾아보기", command=self.pick_src).grid(row=0, column=2)
+        treefrm = ttk.Frame(self.root)
+        treefrm.pack(fill="both", expand=False, padx=8, pady=4)
 
-        # 대상 폴더
-        ttk.Label(frm, text="대상 폴더 (D드라이브):").grid(row=1, column=0, sticky="w")
-        ttk.Entry(frm, textvariable=self.dst_var, width=70).grid(
-            row=1, column=1, sticky="we", padx=4)
-        ttk.Button(frm, text="찾아보기", command=self.pick_dst).grid(row=1, column=2)
+        self.tree = ttk.Treeview(
+            treefrm, columns=("src", "dst"), show="headings", height=7)
+        self.tree.heading("src", text="원본 폴더 (SSD)")
+        self.tree.heading("dst", text="대상 폴더 (D드라이브)")
+        self.tree.column("src", width=370, anchor="w")
+        self.tree.column("dst", width=370, anchor="w")
+        self.tree.pack(side="left", fill="both", expand=True)
+        tsb = ttk.Scrollbar(treefrm, command=self.tree.yview)
+        tsb.pack(side="right", fill="y")
+        self.tree.configure(yscrollcommand=tsb.set)
 
-        frm.columnconfigure(1, weight=1)
+        # 목록 조작 버튼
+        listbtns = ttk.Frame(self.root)
+        listbtns.pack(fill="x", **pad)
+        ttk.Button(listbtns, text="폴더 쌍 추가",
+                   command=self.add_pair).pack(side="left", padx=4)
+        ttk.Button(listbtns, text="선택한 쌍 수정",
+                   command=self.edit_pair).pack(side="left", padx=4)
+        ttk.Button(listbtns, text="선택한 쌍 제거",
+                   command=self.remove_pair).pack(side="left", padx=4)
+        ttk.Button(listbtns, text="전체 비우기",
+                   command=self.clear_pairs).pack(side="left", padx=4)
 
         # 옵션
         opt = ttk.Frame(self.root)
@@ -171,14 +205,14 @@ class App:
             opt, text="삭제 전 확인",
             variable=self.confirm_delete_var).pack(side="left", padx=4)
 
-        # 버튼
+        # 실행 버튼
         btns = ttk.Frame(self.root)
         btns.pack(fill="x", **pad)
         self.preview_btn = ttk.Button(
             btns, text="미리보기 (변경사항 확인)", command=self.preview)
         self.preview_btn.pack(side="left", padx=4)
         self.sync_btn = ttk.Button(
-            btns, text="동기화 시작", command=self.start_sync)
+            btns, text="전체 동기화 시작", command=self.start_sync)
         self.sync_btn.pack(side="left", padx=4)
 
         # 진행 표시줄
@@ -188,7 +222,7 @@ class App:
         # 로그 영역
         logfrm = ttk.Frame(self.root)
         logfrm.pack(fill="both", expand=True, padx=8, pady=4)
-        self.log = tk.Text(logfrm, wrap="none", height=18, state="disabled")
+        self.log = tk.Text(logfrm, wrap="none", height=14, state="disabled")
         self.log.pack(side="left", fill="both", expand=True)
         sb = ttk.Scrollbar(logfrm, command=self.log.yview)
         sb.pack(side="right", fill="y")
@@ -199,16 +233,81 @@ class App:
         ttk.Label(self.root, textvariable=self.status_var, relief="sunken",
                   anchor="w").pack(fill="x", side="bottom")
 
-    # ---------------- 폴더 선택 ----------------
-    def pick_src(self):
-        path = filedialog.askdirectory(title="원본 폴더 선택")
-        if path:
-            self.src_var.set(path)
+    # ---------------- 폴더 쌍 관리 ----------------
+    def _refresh_tree(self):
+        self.tree.delete(*self.tree.get_children())
+        for src, dst in self.pairs:
+            self.tree.insert("", "end", values=(src, dst))
 
-    def pick_dst(self):
-        path = filedialog.askdirectory(title="대상 폴더 선택")
-        if path:
-            self.dst_var.set(path)
+    def _ask_pair(self, init_src="", init_dst=""):
+        """원본/대상 폴더를 차례로 묻는다. 취소하면 None 반환."""
+        src = filedialog.askdirectory(
+            title="원본 폴더(SSD) 선택",
+            initialdir=init_src or os.path.expanduser("~"))
+        if not src:
+            return None
+        dst = filedialog.askdirectory(
+            title="대상 폴더(D드라이브) 선택",
+            initialdir=init_dst or os.path.expanduser("~"))
+        if not dst:
+            return None
+        err = validate_pair(src, dst)
+        if err:
+            messagebox.showerror("잘못된 폴더 쌍", err)
+            return None
+        return (os.path.abspath(src), os.path.abspath(dst))
+
+    def add_pair(self):
+        pair = self._ask_pair()
+        if not pair:
+            return
+        if pair in self.pairs:
+            messagebox.showinfo("안내", "이미 등록된 폴더 쌍입니다.")
+            return
+        self.pairs.append(pair)
+        self._refresh_tree()
+        self._persist()
+
+    def edit_pair(self):
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showinfo("안내", "수정할 폴더 쌍을 목록에서 선택하세요.")
+            return
+        idx = self.tree.index(sel[0])
+        old_src, old_dst = self.pairs[idx]
+        pair = self._ask_pair(init_src=old_src, init_dst=old_dst)
+        if not pair:
+            return
+        self.pairs[idx] = pair
+        self._refresh_tree()
+        self._persist()
+
+    def remove_pair(self):
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showinfo("안내", "제거할 폴더 쌍을 목록에서 선택하세요.")
+            return
+        # 여러 개 선택 가능 — 인덱스 큰 것부터 제거
+        idxs = sorted((self.tree.index(s) for s in sel), reverse=True)
+        for i in idxs:
+            del self.pairs[i]
+        self._refresh_tree()
+        self._persist()
+
+    def clear_pairs(self):
+        if not self.pairs:
+            return
+        if messagebox.askyesno("확인", "등록된 폴더 쌍을 모두 지울까요?"):
+            self.pairs = []
+            self._refresh_tree()
+            self._persist()
+
+    def _persist(self):
+        save_config({
+            "pairs": [list(p) for p in self.pairs],
+            "delete_enabled": self.delete_var.get(),
+            "confirm_delete": self.confirm_delete_var.get(),
+        })
 
     # ---------------- 로그 ----------------
     def log_msg(self, msg):
@@ -231,167 +330,159 @@ class App:
         self.log.delete("1.0", "end")
         self.log.configure(state="disabled")
 
-    # ---------------- 입력 검증 ----------------
-    def _validate(self):
-        src = self.src_var.get().strip()
-        dst = self.dst_var.get().strip()
-        if not src or not dst:
-            messagebox.showwarning("경고", "원본과 대상 폴더를 모두 선택하세요.")
+    # ---------------- 공통: 유효한 쌍 목록 만들기 ----------------
+    def _valid_pairs(self):
+        if not self.pairs:
+            messagebox.showwarning("경고", "동기화할 폴더 쌍을 먼저 추가하세요.")
             return None
-        if not os.path.isdir(src):
-            messagebox.showerror("오류", f"원본 폴더가 존재하지 않습니다:\n{src}")
-            return None
-        src_abs = os.path.abspath(src)
-        dst_abs = os.path.abspath(dst)
-        if src_abs == dst_abs:
-            messagebox.showerror("오류", "원본과 대상이 같은 폴더입니다.")
-            return None
-        # 대상이 원본의 하위 폴더이면 무한 복사가 되므로 막는다.
-        if dst_abs.startswith(src_abs + os.sep):
-            messagebox.showerror("오류", "대상 폴더가 원본 폴더 안에 있을 수 없습니다.")
-            return None
-        return src_abs, dst_abs
+        valid = []
+        for src, dst in self.pairs:
+            err = validate_pair(src, dst)
+            if err:
+                self.log_msg(f"[건너뜀] {src} → {dst} : {err}")
+            else:
+                valid.append((os.path.abspath(src), os.path.abspath(dst)))
+        return valid
 
     # ---------------- 미리보기 ----------------
     def preview(self):
-        validated = self._validate()
-        if not validated:
-            return
-        src, dst = validated
-        if not os.path.isdir(dst):
-            self.clear_log()
-            self.log_msg(f"대상 폴더가 아직 없습니다(동기화 시 생성됨): {dst}")
         self.clear_log()
+        self._persist()
+        pairs = self._valid_pairs()
+        if pairs is None:
+            return
         self.status_var.set("변경사항 분석 중...")
         self._set_buttons(False)
-        threading.Thread(target=self._preview_worker, args=(src, dst),
+        threading.Thread(target=self._preview_worker, args=(pairs,),
                          daemon=True).start()
 
-    def _preview_worker(self, src, dst):
-        plan = SyncPlan(src, dst)
-        if os.path.isdir(dst):
-            plan.build()
-        else:
-            # 대상이 없으면 모든 파일이 새로 복사 대상
-            plan.to_copy = sorted(list_relative_files(src))
-        self.log_msg("===== 미리보기 =====")
-        self.log_msg(f"추가될 파일   : {len(plan.to_copy)} 개")
-        self.log_msg(f"변경될 파일   : {len(plan.to_update)} 개")
-        self.log_msg(f"건너뛸 파일   : {len(plan.to_skip)} 개")
-        self.log_msg(f"삭제될 파일   : {len(plan.to_delete)} 개")
-        self.log_msg("")
-        for rel in plan.to_copy:
-            self.log_msg(f"  [추가] {rel}")
-        for rel in plan.to_update:
-            self.log_msg(f"  [변경] {rel}")
-        for rel in plan.to_delete:
-            self.log_msg(f"  [삭제] {rel}")
-        self.log_msg("===================")
-        self.status_var.set("미리보기 완료")
-        self._set_buttons(True)
+    def _preview_worker(self, pairs):
+        try:
+            tot_copy = tot_update = tot_skip = tot_delete = 0
+            for src, dst in pairs:
+                plan = SyncPlan(src, dst)
+                plan.build()
+                tot_copy += len(plan.to_copy)
+                tot_update += len(plan.to_update)
+                tot_skip += len(plan.to_skip)
+                tot_delete += len(plan.to_delete)
+                self.log_msg(f"===== {src} → {dst} =====")
+                self.log_msg(f"  추가 {len(plan.to_copy)} / 변경 {len(plan.to_update)} / "
+                             f"건너뜀 {len(plan.to_skip)} / 삭제 {len(plan.to_delete)}")
+                for rel in plan.to_copy:
+                    self.log_msg(f"  [추가] {rel}")
+                for rel in plan.to_update:
+                    self.log_msg(f"  [변경] {rel}")
+                for rel in plan.to_delete:
+                    self.log_msg(f"  [삭제] {rel}")
+            self.log_msg("")
+            self.log_msg(f"### 전체 합계: 추가 {tot_copy} / 변경 {tot_update} / "
+                         f"건너뜀 {tot_skip} / 삭제 {tot_delete}")
+            self.status_var.set("미리보기 완료")
+        finally:
+            self._set_buttons(True)
 
     # ---------------- 동기화 ----------------
     def start_sync(self):
-        validated = self._validate()
-        if not validated:
-            return
-        src, dst = validated
         self.clear_log()
+        self._persist()
+        pairs = self._valid_pairs()
+        if pairs is None:
+            return
+        if not pairs:
+            messagebox.showwarning("경고", "동기화할 유효한 폴더 쌍이 없습니다.")
+            return
         self.status_var.set("변경사항 분석 중...")
         self._set_buttons(False)
-        threading.Thread(target=self._sync_worker, args=(src, dst),
+        threading.Thread(target=self._sync_worker, args=(pairs,),
                          daemon=True).start()
 
-    def _sync_worker(self, src, dst):
+    def _sync_worker(self, pairs):
         try:
-            os.makedirs(dst, exist_ok=True)
+            # 1) 모든 쌍의 계획을 먼저 세운다 (진행률 총량 계산 + 삭제 확인용)
+            plans = []
+            for src, dst in pairs:
+                os.makedirs(dst, exist_ok=True)
+                plan = SyncPlan(src, dst)
+                plan.build()
+                plans.append(plan)
 
-            plan = SyncPlan(src, dst)
-            plan.build()
+            tot_copy = sum(len(p.to_copy) for p in plans)
+            tot_update = sum(len(p.to_update) for p in plans)
+            tot_skip = sum(len(p.to_skip) for p in plans)
+            all_deletes = [(p, rel) for p in plans for rel in p.to_delete]
+            self.log_msg(f"분석 완료 - 폴더 쌍 {len(plans)}개 / "
+                         f"추가 {tot_copy} / 변경 {tot_update} / "
+                         f"건너뜀 {tot_skip} / 삭제대상 {len(all_deletes)}")
 
-            self.log_msg(f"분석 완료 - 추가 {len(plan.to_copy)} / "
-                         f"변경 {len(plan.to_update)} / "
-                         f"건너뜀 {len(plan.to_skip)} / "
-                         f"삭제대상 {len(plan.to_delete)}")
-
-            # 삭제 확인
+            # 2) 삭제 여부 결정 (전체에 대해 한 번만 확인)
             do_delete = False
-            if self.delete_var.get() and plan.to_delete:
+            if self.delete_var.get() and all_deletes:
                 if self.confirm_delete_var.get():
-                    do_delete = self._ask_delete(plan.to_delete)
+                    do_delete = self._ask_delete([rel for _p, rel in all_deletes])
                 else:
                     do_delete = True
 
-            total = len(plan.to_copy) + len(plan.to_update)
-            if do_delete:
-                total += len(plan.to_delete)
+            total = tot_copy + tot_update + (len(all_deletes) if do_delete else 0)
             self._set_progress_max(total)
 
             done = 0
-            copied = updated = deleted = skipped = errors = 0
+            copied = updated = deleted = errors = 0
 
-            # 추가 + 변경 복사
-            for rel in plan.to_copy + plan.to_update:
-                s = os.path.join(src, rel)
-                d = os.path.join(dst, rel)
-                tag = "추가" if rel in plan.to_copy else "변경"
-                try:
-                    os.makedirs(os.path.dirname(d), exist_ok=True)
-                    shutil.copy2(s, d)  # 메타데이터(수정시간) 보존
-                    self.log_msg(f"[{tag}] {rel}")
-                    if tag == "추가":
-                        copied += 1
-                    else:
-                        updated += 1
-                except Exception as e:
-                    self.log_msg(f"[오류] 복사 실패 {rel}: {e}")
-                    errors += 1
-                done += 1
-                self._set_progress(done)
-
-            skipped = len(plan.to_skip)
-
-            # 삭제
-            if do_delete:
-                for rel in plan.to_delete:
-                    d = os.path.join(dst, rel)
+            # 3) 추가 + 변경 복사
+            for plan in plans:
+                for rel in plan.to_copy + plan.to_update:
+                    s = os.path.join(plan.src, rel)
+                    d = os.path.join(plan.dst, rel)
+                    is_add = rel in plan.to_copy
+                    tag = "추가" if is_add else "변경"
                     try:
-                        os.remove(d)
-                        self.log_msg(f"[삭제] {rel}")
-                        deleted += 1
+                        os.makedirs(os.path.dirname(d), exist_ok=True)
+                        shutil.copy2(s, d)  # 메타데이터(수정시간) 보존
+                        self.log_msg(f"[{tag}] {rel}")
+                        if is_add:
+                            copied += 1
+                        else:
+                            updated += 1
                     except Exception as e:
-                        self.log_msg(f"[오류] 삭제 실패 {rel}: {e}")
+                        self.log_msg(f"[오류] 복사 실패 {rel}: {e}")
                         errors += 1
                     done += 1
                     self._set_progress(done)
 
-                # 빈 폴더 정리
-                for rel in plan.dirs_to_delete:
-                    d = os.path.join(dst, rel)
-                    try:
-                        if os.path.isdir(d) and not os.listdir(d):
-                            os.rmdir(d)
-                            self.log_msg(f"[폴더삭제] {rel}")
-                    except Exception:
-                        pass
-            elif plan.to_delete:
-                self.log_msg(f"삭제 건너뜀 - {len(plan.to_delete)} 개 파일은 "
+            # 4) 삭제
+            if do_delete:
+                for plan in plans:
+                    for rel in plan.to_delete:
+                        d = os.path.join(plan.dst, rel)
+                        try:
+                            os.remove(d)
+                            self.log_msg(f"[삭제] {rel}")
+                            deleted += 1
+                        except Exception as e:
+                            self.log_msg(f"[오류] 삭제 실패 {rel}: {e}")
+                            errors += 1
+                        done += 1
+                        self._set_progress(done)
+                    # 빈 폴더 정리
+                    for rel in plan.dirs_to_delete:
+                        d = os.path.join(plan.dst, rel)
+                        try:
+                            if os.path.isdir(d) and not os.listdir(d):
+                                os.rmdir(d)
+                                self.log_msg(f"[폴더삭제] {rel}")
+                        except Exception:
+                            pass
+            elif all_deletes:
+                self.log_msg(f"삭제 건너뜀 - {len(all_deletes)}개 파일은 "
                              "대상에 그대로 둡니다.")
 
             self.log_msg("")
             self.log_msg(f"===== 완료 ({datetime.now():%Y-%m-%d %H:%M:%S}) =====")
-            self.log_msg(f"추가 {copied} / 변경 {updated} / 건너뜀 {skipped} / "
+            self.log_msg(f"추가 {copied} / 변경 {updated} / 건너뜀 {tot_skip} / "
                          f"삭제 {deleted} / 오류 {errors}")
             self.status_var.set(
                 f"완료: 추가 {copied}, 변경 {updated}, 삭제 {deleted}, 오류 {errors}")
-
-            # 설정 저장
-            save_config({
-                "src": self.src_var.get().strip(),
-                "dst": self.dst_var.get().strip(),
-                "delete_enabled": self.delete_var.get(),
-                "confirm_delete": self.confirm_delete_var.get(),
-            })
         except Exception as e:
             self.log_msg(f"[치명적 오류] {e}")
             self.status_var.set("오류로 중단됨")
@@ -405,8 +496,8 @@ class App:
 
         def ask():
             preview = "\n".join(to_delete[:20])
-            more = "" if len(to_delete) <= 20 else f"\n... 외 {len(to_delete) - 20} 개"
-            msg = (f"원본에서 삭제된 파일 {len(to_delete)} 개를 "
+            more = "" if len(to_delete) <= 20 else f"\n... 외 {len(to_delete) - 20}개"
+            msg = (f"원본에서 삭제된 파일 {len(to_delete)}개를 "
                    f"대상 폴더에서도 삭제할까요?\n\n{preview}{more}")
             result["ok"] = messagebox.askyesno("삭제 확인", msg)
             event.set()
