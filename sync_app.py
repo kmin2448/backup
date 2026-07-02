@@ -99,8 +99,7 @@ def save_config(cfg):
         pass
 
 
-# 동기화에서 제외할 항목 (Google Drive for Desktop 임시 폴더/파일, OS 잔여물 등).
-# 이런 항목까지 복사하면 .tmp.driveupload 안의 숫자 임시 파일이 함께 복사된다.
+# 동기화에서 항상 제외할 OS 잔여물 파일(윈도/맥 시스템 파일, 오피스 임시 파일 등).
 EXCLUDE_FILE_NAMES = {"desktop.ini", "thumbs.db", ".ds_store"}
 EXCLUDE_FILE_PREFIXES = ("~$",)
 
@@ -118,14 +117,8 @@ def parse_exclude_words(text):
 
 
 def _is_excluded_dir(name, extra_words=()):
-    """제외 대상 폴더인지 판단.
-
-    - Google Drive 임시 폴더(.tmp.driveupload/.tmp.drivedownload 등)
-    - 사용자가 지정한 단어를 이름에 포함하는 폴더
-    """
+    """사용자가 지정한 단어를 이름에 포함하는 폴더를 제외 대상으로 판단한다."""
     low = name.lower()
-    if low.startswith(".tmp.drive"):
-        return True
     return any(w in low for w in extra_words)
 
 
