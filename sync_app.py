@@ -117,41 +117,56 @@ def parse_exclude_words(text):
     return words
 
 
-def _is_excluded_dir(name, extra_words=()):
-    """사용자가 지정한 단어를 이름에 포함하는 폴더를 제외 대상으로 판단한다."""
+def _is_excluded_dir(name, extra_words=(), include_words=()):
+    """폴더를 제외 대상으로 볼지 판단.
+
+    - include_words(예외/허용 단어)를 이름에 포함하면 제외하지 않는다(우선).
+    - 그 외에는 extra_words(제외 단어)를 포함하면 제외.
+    """
     low = name.lower()
+    if any(w in low for w in include_words):
+        return False
     return any(w in low for w in extra_words)
 
 
-def _is_excluded_file(name, extra_words=()):
-    """제외 대상 파일인지 판단(OS 잔여물 + 사용자가 지정한 단어 포함 파일)."""
+def _is_excluded_file(name, extra_words=(), include_words=()):
+    """파일을 제외 대상으로 볼지 판단.
+
+    - OS 잔여물(desktop.ini 등)은 항상 제외.
+    - include_words(예외/허용 단어)를 포함하면 제외하지 않는다.
+    - 그 외에는 extra_words(제외 단어)를 포함하면 제외.
+    """
     low = name.lower()
     if low in EXCLUDE_FILE_NAMES or any(
             low.startswith(p) for p in EXCLUDE_FILE_PREFIXES):
         return True
+    if any(w in low for w in include_words):
+        return False
     return any(w in low for w in extra_words)
 
 
-def list_relative_files(root, exclude_dirs=(), exclude_files=()):
+def list_relative_files(root, exclude_dirs=(), exclude_files=(),
+                        include_dirs=(), include_files=()):
     """root 아래의 모든 파일을 root 기준 상대경로 set 으로 반환(제외 항목 제외)."""
     result = set()
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames
-                       if not _is_excluded_dir(d, exclude_dirs)]
+                       if not _is_excluded_dir(d, exclude_dirs, include_dirs)]
         for name in filenames:
-            if _is_excluded_file(name, exclude_files):
+            if _is_excluded_file(name, exclude_files, include_files):
                 continue
             full = os.path.join(dirpath, name)
             result.add(os.path.relpath(full, root))
     return result
 
 
-def list_relative_dirs(root, exclude_dirs=(), exclude_files=()):
+def list_relative_dirs(root, exclude_dirs=(), exclude_files=(),
+                       include_dirs=(), include_files=()):
     """root 아래의 모든 하위 폴더를 root 기준 상대경로 set 으로 반환(제외 폴더 제외)."""
     result = set()
     for dirpath, dirnames, _filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames
-                       if not _is_excluded_dir(d, exclude_dirs)]
+                       if not _is_excluded_dir(d, exclude_dirs, include_dirs)]
         for name in dirnames:
             full = os.path.join(dirpath, name)
             result.add(os.path.relpath(full, root))
@@ -211,7 +226,8 @@ class SyncPlan:
     """
 
     def __init__(self, src, dst, conflict_mode="diff",
-                 exclude_dirs=(), exclude_files=()):
+                 exclude_dirs=(), exclude_files=(),
+                 include_dirs=(), include_files=()):
         self.src = src
         self.dst = dst
         self.conflict_mode = conflict_mode if conflict_mode in CONFLICT_MODES \
@@ -219,6 +235,9 @@ class SyncPlan:
         # 이름에 포함되면 원본/대상 양쪽 모두 건너뛸 단어 목록
         self.exclude_dirs = tuple(exclude_dirs)
         self.exclude_files = tuple(exclude_files)
+        # 제외 단어가 있어도 이 단어를 포함하면 동기화 대상으로 인정(예외/허용)
+        self.include_dirs = tuple(include_dirs)
+        self.include_files = tuple(include_files)
         self.to_copy = []        # 새로 추가된 파일
         self.to_update = []      # 변경되어 덮어쓸 파일
         self.to_skip = []        # 동일/건너뛸 파일
@@ -227,9 +246,11 @@ class SyncPlan:
 
     def build(self):
         src_files = list_relative_files(
-            self.src, self.exclude_dirs, self.exclude_files)
+            self.src, self.exclude_dirs, self.exclude_files,
+            self.include_dirs, self.include_files)
         dst_files = list_relative_files(
-            self.dst, self.exclude_dirs, self.exclude_files) \
+            self.dst, self.exclude_dirs, self.exclude_files,
+            self.include_dirs, self.include_files) \
             if os.path.isdir(self.dst) else set()
 
         for rel in sorted(src_files):
@@ -246,16 +267,19 @@ class SyncPlan:
             self.to_delete.append(rel)
 
         src_dirs = list_relative_dirs(
-            self.src, self.exclude_dirs, self.exclude_files)
+            self.src, self.exclude_dirs, self.exclude_files,
+            self.include_dirs, self.include_files)
         dst_dirs = list_relative_dirs(
-            self.dst, self.exclude_dirs, self.exclude_files) \
+            self.dst, self.exclude_dirs, self.exclude_files,
+            self.include_dirs, self.include_files) \
             if os.path.isdir(self.dst) else set()
         self.dirs_to_delete = sorted(dst_dirs - src_dirs, reverse=True)
 
 
 # ===================== 이름 일괄 변경 =====================
-# 지정한 루트 폴더 "바로 아래"의 폴더 또는 파일 이름을 일괄로 바꾼다.
-# (그 아래(하위 폴더 내부)는 건드리지 않는다.)
+# 지정한 루트 폴더 아래의 폴더 또는 파일 이름을 일괄로 바꾼다.
+#   recursive=False : 루트 "바로 아래"의 항목만
+#   recursive=True  : 하위 폴더 안의 항목까지 모두
 
 def list_immediate_names(root, want_dir):
     """root 바로 아래의 이름 목록(정렬). want_dir=True면 폴더만, False면 파일만."""
@@ -289,23 +313,16 @@ def _rename_target(old, want_dir, op, new_name, find, replace):
     return old.replace(find, replace)
 
 
-def build_rename_plan(root, want_dir, op, new_name="", find="", replace=""):
-    """(old, new) 변경 목록을 만든다.
+def _resolve_dir_renames(dir_path, want_dir, op, new_name, find, replace):
+    """한 폴더(dir_path) 안에서 바뀔 (old_basename, new_basename) 목록을 만든다.
 
-    - 같은 이름으로 겹치거나 기존 항목과 충돌하면 앞에 "1_", "2_" … 를 붙여 구분.
-    - 실제로 이름이 바뀌는 항목만 돌려준다.
+    같은 이름으로 겹치거나 남는 항목과 충돌하면 앞에 "1_", "2_" … 를 붙여 구분한다.
     """
-    if op == "set" and not new_name:
-        return []
-    if op == "replace" and not find:
-        return []
-
     try:
-        all_names = set(os.listdir(root))
+        all_names = set(os.listdir(dir_path))
     except OSError:
         return []
-    names = list_immediate_names(root, want_dir)
-
+    names = list_immediate_names(dir_path, want_dir)
     desired = [(old, _rename_target(old, want_dir, op, new_name, find, replace))
                for old in names]
 
@@ -341,33 +358,74 @@ def build_rename_plan(root, want_dir, op, new_name="", find="", replace=""):
     return result
 
 
-def apply_rename_plan(root, changes):
-    """changes: [(old, new), …] 를 실제로 적용한다.
+def build_rename_plan(root, want_dir, op, new_name="", find="", replace="",
+                      recursive=False):
+    """(old_rel, new_rel) 변경 목록을 만든다(경로는 root 기준 상대경로).
 
-    중간 충돌(A→B 인데 B가 아직 존재 등)을 피하려고 2단계(임시 이름 경유)로 바꾼다.
-    (done_count, errors) 를 돌려준다. errors: [(old, new, 사유), …]
+    recursive=True 면 하위 폴더 안의 항목까지 포함한다.
+    이름 충돌은 각 폴더 안에서 "1_", "2_" … 로 구분한다.
     """
+    if op == "set" and not new_name:
+        return []
+    if op == "replace" and not find:
+        return []
+
+    if recursive:
+        dirs = [dp for dp, _dn, _fn in os.walk(root)]
+    else:
+        dirs = [root]
+
+    result = []
+    for d in dirs:
+        for old, new in _resolve_dir_renames(
+                d, want_dir, op, new_name, find, replace):
+            old_rel = os.path.relpath(os.path.join(d, old), root)
+            new_rel = os.path.relpath(os.path.join(d, new), root)
+            result.append((old_rel, new_rel))
+    return result
+
+
+def apply_rename_plan(root, changes):
+    """changes: [(old_rel, new_rel), …] 를 실제로 적용한다.
+
+    - 폴더별로 묶어 2단계(임시 이름 경유)로 바꿔 형제 이름 충돌을 피하고,
+    - 깊은 폴더부터 처리해 상위 폴더가 먼저 바뀌어 경로가 어긋나는 일을 막는다.
+    (done_count, errors) 를 돌려준다. errors: [(old_rel, new_rel, 사유), …]
+    """
+    from collections import defaultdict
+    groups = defaultdict(list)
+    for old_rel, new_rel in changes:
+        parent = os.path.dirname(old_rel)
+        groups[parent].append((os.path.basename(old_rel),
+                               os.path.basename(new_rel)))
+
+    def depth(p):
+        return len(p.split(os.sep)) if p else 0
+
     done = 0
     errors = []
-    temps = []
-    for i, (old, new) in enumerate(changes):
-        tmp = f".__bulk_rename_tmp_{i}__"
-        try:
-            os.rename(os.path.join(root, old), os.path.join(root, tmp))
-            temps.append((tmp, new, old))
-        except OSError as e:
-            errors.append((old, new, str(e)))
-    for tmp, new, old in temps:
-        try:
-            os.rename(os.path.join(root, tmp), os.path.join(root, new))
-            done += 1
-        except OSError as e:
-            errors.append((old, new, str(e)))
-            # 실패하면 원래 이름으로 되돌린다
+    for parent in sorted(groups, key=depth, reverse=True):
+        d = os.path.join(root, parent) if parent else root
+        temps = []
+        for i, (old, new) in enumerate(groups[parent]):
+            tmp = f".__bulk_rename_tmp_{i}__"
             try:
-                os.rename(os.path.join(root, tmp), os.path.join(root, old))
-            except OSError:
-                pass
+                os.rename(os.path.join(d, old), os.path.join(d, tmp))
+                temps.append((tmp, new, old))
+            except OSError as e:
+                errors.append((os.path.join(parent, old),
+                               os.path.join(parent, new), str(e)))
+        for tmp, new, old in temps:
+            try:
+                os.rename(os.path.join(d, tmp), os.path.join(d, new))
+                done += 1
+            except OSError as e:
+                errors.append((os.path.join(parent, old),
+                               os.path.join(parent, new), str(e)))
+                try:   # 실패하면 원래 이름으로 되돌린다
+                    os.rename(os.path.join(d, tmp), os.path.join(d, old))
+                except OSError:
+                    pass
     return done, errors
 
 
@@ -455,6 +513,9 @@ class App:
         # 이름에 이 단어를 포함하면 원본/대상 양쪽에서 건너뛴다(콤마로 구분).
         self.exclude_dirs_var = tk.StringVar(value=cfg.get("exclude_dirs", ""))
         self.exclude_files_var = tk.StringVar(value=cfg.get("exclude_files", ""))
+        # 제외 단어가 있어도 이 단어를 포함하면 동기화 대상으로 인정(예외/허용).
+        self.include_dirs_var = tk.StringVar(value=cfg.get("include_dirs", ""))
+        self.include_files_var = tk.StringVar(value=cfg.get("include_files", ""))
         self.src_input = tk.StringVar()
         self.dst_input = tk.StringVar()
 
@@ -484,6 +545,7 @@ class App:
         self.rn_newname = tk.StringVar()
         self.rn_find = tk.StringVar()
         self.rn_replace = tk.StringVar()
+        self.rn_recursive = tk.BooleanVar(value=False)  # 하위 폴더까지 포함
 
         self._setup_fonts()
         self._setup_style()
@@ -742,9 +804,33 @@ class App:
                 self.font_small)
         self._label(c, "콤마(,)로 여러 단어를 지정할 수 있습니다. 대소문자 구분 없음.",
                     font=self.font_small, fg=MUTED).grid(
-            row=3, column=0, columnspan=2, sticky="w", padx=14, pady=(2, 10))
+            row=3, column=0, columnspan=2, sticky="w", padx=14, pady=(2, 6))
         ex_dir_entry.bind("<FocusOut>", lambda _e: self._persist())
         ex_file_entry.bind("<FocusOut>", lambda _e: self._persist())
+
+        ctk.CTkFrame(c, height=1, fg_color=SHADOW).grid(
+            row=4, column=0, columnspan=2, sticky="ew", padx=14, pady=2)
+        self._label(c, "예외 — 제외 단어가 있어도 이 단어를 포함하면 동기화 대상",
+                    font=self.font_b, fg=TEXT).grid(
+            row=5, column=0, columnspan=2, sticky="w", padx=14, pady=(6, 3))
+        self._label(c, "폴더 이름").grid(row=6, column=0, sticky="w",
+                                     padx=(14, 8), pady=4)
+        inc_dir_entry = self._entry(c, self.include_dirs_var)
+        inc_dir_entry.grid(row=6, column=1, sticky="ew", padx=(0, 14), pady=4)
+        Tooltip(inc_dir_entry,
+                "제외 단어에 걸리는 폴더라도 이 단어를 포함하면 동기화합니다.\n"
+                "콤마(,)로 여러 개 지정 (예: 중요, keep)",
+                self.font_small)
+        self._label(c, "파일 이름").grid(row=7, column=0, sticky="w",
+                                     padx=(14, 8), pady=4)
+        inc_file_entry = self._entry(c, self.include_files_var)
+        inc_file_entry.grid(row=7, column=1, sticky="ew", padx=(0, 14), pady=(4, 10))
+        Tooltip(inc_file_entry,
+                "제외 단어에 걸리는 파일이라도 이 단어를 포함하면 동기화합니다.\n"
+                "콤마(,)로 여러 개 지정 (예: 최종, keep)",
+                self.font_small)
+        inc_dir_entry.bind("<FocusOut>", lambda _e: self._persist())
+        inc_file_entry.bind("<FocusOut>", lambda _e: self._persist())
 
         # 예약 카드
         c = self._card(full)
@@ -859,8 +945,9 @@ class App:
         self._button(c, "찾아보기", self.browse_rename_root,
                      "이름을 바꿀 폴더들이 들어있는 상위 폴더를 선택합니다",
                      width=92).grid(row=0, column=2, padx=(8, 14), pady=(11, 4))
-        self._label(c, "이 폴더 바로 아래의 항목만 바꿉니다. 그 안(하위 폴더 내부)은 "
-                       "건드리지 않습니다.", font=self.font_small, fg=MUTED).grid(
+        self._label(c, "기본은 이 폴더 바로 아래의 항목만 바꿉니다. 아래 '재귀'를 켜면 "
+                       "하위 폴더 안까지 모두 바꿉니다.", font=self.font_small,
+                    fg=MUTED).grid(
             row=1, column=0, columnspan=3, sticky="w", padx=14, pady=(0, 11))
 
         # 대상 종류 카드
@@ -868,10 +955,16 @@ class App:
         self._label(c, "무엇의 이름을 바꿀까요?", font=self.font_b, fg=TEXT).pack(
             anchor="w", padx=14, pady=(10, 3))
         row = ctk.CTkFrame(c, fg_color="transparent")
-        row.pack(fill="x", padx=14, pady=(0, 10))
+        row.pack(fill="x", padx=14, pady=(0, 6))
         self._pradio(row, "폴더 이름", self.rn_target, "dir").pack(side="left")
         self._pradio(row, "파일 이름", self.rn_target, "file").pack(
             side="left", padx=(24, 0))
+        ctk.CTkSwitch(c, text="하위 폴더 안의 항목까지 포함 (재귀)",
+                      variable=self.rn_recursive, font=self.font_n,
+                      text_color=TEXT, progress_color=TEAL, fg_color=SHADOW,
+                      button_color="#FFFFFF", button_hover_color=HILIGHT,
+                      switch_width=40, switch_height=20).pack(
+            anchor="w", padx=14, pady=(0, 10))
 
         # 변경 방식 카드
         c = self._card(body)
@@ -971,17 +1064,20 @@ class App:
             return None, "대상 루트 폴더를 올바르게 지정하세요."
         want_dir = self.rn_target.get() == "dir"
         op = self.rn_op.get()
+        recursive = self.rn_recursive.get()
         if op == "set":
             nm = self.rn_newname.get().strip()
             if not nm:
                 return None, "새 이름을 입력하세요."
-            plan = build_rename_plan(root, want_dir, "set", new_name=nm)
+            plan = build_rename_plan(root, want_dir, "set", new_name=nm,
+                                     recursive=recursive)
         else:
             find = self.rn_find.get()
             if not find.strip():
                 return None, "바꿀 단어를 입력하세요."
             plan = build_rename_plan(root, want_dir, "replace",
-                                     find=find, replace=self.rn_replace.get())
+                                     find=find, replace=self.rn_replace.get(),
+                                     recursive=recursive)
         return plan, None
 
     def rename_preview(self):
@@ -1106,6 +1202,8 @@ class App:
             "conflict_mode": self.conflict_mode.get(),
             "exclude_dirs": self.exclude_dirs_var.get().strip(),
             "exclude_files": self.exclude_files_var.get().strip(),
+            "include_dirs": self.include_dirs_var.get().strip(),
+            "include_files": self.include_files_var.get().strip(),
             "sched_enabled": self.sched_enabled.get(),
             "sched_mode": self.sched_mode.get(),
             "sched_time": self.sched_time.get().strip(),
@@ -1218,23 +1316,32 @@ class App:
         conflict_mode = self.conflict_mode.get()
         exclude_dirs = parse_exclude_words(self.exclude_dirs_var.get())
         exclude_files = parse_exclude_words(self.exclude_files_var.get())
+        include_dirs = parse_exclude_words(self.include_dirs_var.get())
+        include_files = parse_exclude_words(self.include_files_var.get())
         self.progress_var.set("")
         self.set_status("변경사항 분석 중...")
         self._set_buttons(False)
         threading.Thread(
             target=self._preview_worker,
-            args=(pairs, conflict_mode, exclude_dirs, exclude_files),
+            args=(pairs, conflict_mode, exclude_dirs, exclude_files,
+                  include_dirs, include_files),
             daemon=True).start()
 
-    def _preview_worker(self, pairs, conflict_mode, exclude_dirs, exclude_files):
+    def _preview_worker(self, pairs, conflict_mode, exclude_dirs, exclude_files,
+                        include_dirs, include_files):
         try:
             if exclude_dirs:
                 self.log_msg(f"[제외] 폴더 이름 포함: {', '.join(exclude_dirs)}")
             if exclude_files:
                 self.log_msg(f"[제외] 파일 이름 포함: {', '.join(exclude_files)}")
+            if include_dirs:
+                self.log_msg(f"[예외] 폴더 허용: {', '.join(include_dirs)}")
+            if include_files:
+                self.log_msg(f"[예외] 파일 허용: {', '.join(include_files)}")
             tot_copy = tot_update = tot_skip = tot_delete = 0
             for src, dst in pairs:
-                plan = SyncPlan(src, dst, conflict_mode, exclude_dirs, exclude_files)
+                plan = SyncPlan(src, dst, conflict_mode, exclude_dirs, exclude_files,
+                                include_dirs, include_files)
                 plan.build()
                 tot_copy += len(plan.to_copy)
                 tot_update += len(plan.to_update)
@@ -1279,23 +1386,30 @@ class App:
         conflict_mode = self.conflict_mode.get()
         exclude_dirs = parse_exclude_words(self.exclude_dirs_var.get())
         exclude_files = parse_exclude_words(self.exclude_files_var.get())
+        include_dirs = parse_exclude_words(self.include_dirs_var.get())
+        include_files = parse_exclude_words(self.include_files_var.get())
         threading.Thread(
             target=self._sync_worker,
             args=(pairs, delete_enabled, confirm_delete, conflict_mode,
-                  exclude_dirs, exclude_files),
+                  exclude_dirs, exclude_files, include_dirs, include_files),
             daemon=True).start()
 
     def _sync_worker(self, pairs, delete_enabled, confirm_delete, conflict_mode,
-                     exclude_dirs, exclude_files):
+                     exclude_dirs, exclude_files, include_dirs, include_files):
         try:
             if exclude_dirs:
                 self.log_msg(f"[제외] 폴더 이름 포함: {', '.join(exclude_dirs)}")
             if exclude_files:
                 self.log_msg(f"[제외] 파일 이름 포함: {', '.join(exclude_files)}")
+            if include_dirs:
+                self.log_msg(f"[예외] 폴더 허용: {', '.join(include_dirs)}")
+            if include_files:
+                self.log_msg(f"[예외] 파일 허용: {', '.join(include_files)}")
             plans = []
             for src, dst in pairs:
                 os.makedirs(dst, exist_ok=True)
-                plan = SyncPlan(src, dst, conflict_mode, exclude_dirs, exclude_files)
+                plan = SyncPlan(src, dst, conflict_mode, exclude_dirs, exclude_files,
+                                include_dirs, include_files)
                 plan.build()
                 plans.append(plan)
 
