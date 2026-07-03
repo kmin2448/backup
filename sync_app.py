@@ -103,6 +103,13 @@ def save_config(cfg):
 # 동기화에서 항상 제외할 OS 잔여물 파일(윈도/맥 시스템 파일, 오피스 임시 파일 등).
 EXCLUDE_FILE_NAMES = {"desktop.ini", "thumbs.db", ".ds_store"}
 EXCLUDE_FILE_PREFIXES = ("~$",)
+# 탐색기에서 '압축 폴더'로 보이는 확장자. 이런 파일은 폴더 제외 규칙도 함께 적용한다.
+ZIP_FILE_EXTENSIONS = (".zip",)
+
+
+def _is_zip_file(name):
+    """이름이 압축(ZIP) 파일 확장자로 끝나는지 여부."""
+    return name.lower().endswith(ZIP_FILE_EXTENSIONS)
 
 
 def parse_exclude_words(text):
@@ -129,10 +136,12 @@ def _is_excluded_dir(name, extra_words=(), include_words=()):
     return any(w in low for w in extra_words)
 
 
-def _is_excluded_file(name, extra_words=(), include_words=()):
+def _is_excluded_file(name, extra_words=(), include_words=(),
+                      dir_words=(), dir_include_words=()):
     """파일을 제외 대상으로 볼지 판단.
 
     - OS 잔여물(desktop.ini 등)은 항상 제외.
+    - 압축(ZIP) 파일은 탐색기에서 '폴더'로 보이므로 폴더 제외/예외 규칙도 함께 적용.
     - include_words(예외/허용 단어)를 포함하면 제외하지 않는다.
     - 그 외에는 extra_words(제외 단어)를 포함하면 제외.
     """
@@ -140,6 +149,12 @@ def _is_excluded_file(name, extra_words=(), include_words=()):
     if low in EXCLUDE_FILE_NAMES or any(
             low.startswith(p) for p in EXCLUDE_FILE_PREFIXES):
         return True
+    # zip 파일은 폴더처럼 취급: 폴더 예외 단어가 우선, 없으면 폴더 제외 단어 적용.
+    if _is_zip_file(name):
+        if any(w in low for w in dir_include_words):
+            return False
+        if any(w in low for w in dir_words):
+            return True
     if any(w in low for w in include_words):
         return False
     return any(w in low for w in extra_words)
@@ -153,7 +168,8 @@ def list_relative_files(root, exclude_dirs=(), exclude_files=(),
         dirnames[:] = [d for d in dirnames
                        if not _is_excluded_dir(d, exclude_dirs, include_dirs)]
         for name in filenames:
-            if _is_excluded_file(name, exclude_files, include_files):
+            if _is_excluded_file(name, exclude_files, include_files,
+                                 exclude_dirs, include_dirs):
                 continue
             full = os.path.join(dirpath, name)
             result.add(os.path.relpath(full, root))
