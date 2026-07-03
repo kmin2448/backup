@@ -32,23 +32,24 @@ import customtkinter as ctk
 # 설정 파일 (등록한 폴더 쌍과 옵션을 기억)
 CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".folder_sync_config.json")
 
-# ----- 색상 테마 (중립 회색 + 청록 포인트, 미니멀) -----
-BG = "#EAEAEA"          # 중립 옅은 회색 (녹색 끼 없음)
-CARD = "#F2F2F2"        # 배경과 거의 같은 톤 + 부드러운 경계로 떠 보이게
-CARD2 = "#E6E6E6"       # 일반 버튼 바탕(옅은 회색)
-INSET = "#E2E2E2"       # 안으로 들어간 입력칸/리스트/로그
-SHADOW = "#D4D4D4"      # 부드러운 그림자 근사(경계)
-HILIGHT = "#FAFAFA"     # 밝은 하이라이트(경계)
-TEAL = "#2D6A5A"        # 포인트 딥그린/청록 (글씨·테두리·아이콘에만)
-TEAL_DARK = "#235447"
-TEAL_SOFT = "#3E8473"   # 연한 청록
-TEXT = "#2D6A5A"        # 라벨·제목 = 청록
-MUTED = "#6E7C77"       # 보조 텍스트(차분한 회녹)
-LOG_TEXT = "#33403B"    # 입력칸/로그 본문(가독성용 진회색)
-PRIMARY_FILL = "#DBE9E3"  # 강조 버튼: 연한 청록 바탕
-PRIMARY_HOVER = "#CDE0D8"
-BTN_HOVER = "#DCDCDC"     # 일반 버튼 hover
-STOP_HOVER = "#E0E0E0"    # 멈추기(외곽선) hover
+# ----- 색상 테마 (쿨 그레이 뉴모피즘 + 네이비 포인트, 확정 시안 2a) -----
+BG = "#EBECE7"          # 쿨 그레이 배경
+CARD = "#F1F2ED"        # 배경보다 살짝 밝게 떠 있는 카드
+CARD2 = "#F1F2ED"       # 일반 버튼 바탕(카드와 동일 톤)
+INSET = "#E3E5DE"       # 안으로 들어간 입력칸/리스트/로그
+SHADOW = "#D5D8CF"      # 부드러운 그림자 근사(경계)
+HILIGHT = "#FBFBF8"     # 밝은 하이라이트(경계)
+TEAL = "#2E3A59"        # 포인트 네이비 (글씨·채움·아이콘)
+TEAL_DARK = "#3B4A70"   # hover 시 살짝 밝은 네이비
+TEAL_SOFT = "#A24A3F"   # 멈추기(위험) 버튼의 차분한 레드
+TEXT = "#2E3A59"        # 라벨·제목 = 네이비
+MUTED = "#9A907C"       # 보조 텍스트(웜 그레이)
+LOG_TEXT = "#6E6754"    # 입력칸/로그 본문
+PRIMARY_FILL = "#2E3A59"  # 강조 버튼: 네이비 채움
+PRIMARY_HOVER = "#3B4A70"
+PRIMARY_TEXT = "#F5F1E8"  # 네이비 버튼 위 밝은 크림 글씨
+BTN_HOVER = "#E7E9E1"     # 일반 버튼 hover
+STOP_HOVER = "#EFE7E2"    # 멈추기(외곽선) hover
 
 # 폰트: 깔끔하게 보이도록 OS 기본 산세리프 사용 (Windows=맑은 고딕)
 if sys.platform == "win32":
@@ -99,58 +100,41 @@ def save_config(cfg):
         pass
 
 
-# 동기화에서 항상 제외할 OS 잔여물 파일(윈도/맥 시스템 파일, 오피스 임시 파일 등).
+# 동기화에서 제외할 항목 (Google Drive for Desktop 임시 폴더/파일, OS 잔여물 등).
+# 이런 항목까지 복사하면 .tmp.driveupload 안의 숫자 임시 파일이 함께 복사된다.
 EXCLUDE_FILE_NAMES = {"desktop.ini", "thumbs.db", ".ds_store"}
 EXCLUDE_FILE_PREFIXES = ("~$",)
 
 
-def parse_exclude_words(text):
-    """콤마로 구분된 제외 단어 문자열을 소문자 단어 리스트로 변환한다."""
-    if not text:
-        return []
-    words = []
-    for chunk in str(text).replace("\n", ",").split(","):
-        w = chunk.strip().lower()
-        if w:
-            words.append(w)
-    return words
+def _is_excluded_dir(name):
+    """Google Drive 임시 폴더(.tmp.driveupload/.tmp.drivedownload 등) 제외."""
+    return name.lower().startswith(".tmp.drive")
 
 
-def _is_excluded_dir(name, extra_words=()):
-    """사용자가 지정한 단어를 이름에 포함하는 폴더를 제외 대상으로 판단한다."""
+def _is_excluded_file(name):
     low = name.lower()
-    return any(w in low for w in extra_words)
+    return low in EXCLUDE_FILE_NAMES or any(
+        low.startswith(p) for p in EXCLUDE_FILE_PREFIXES)
 
 
-def _is_excluded_file(name, extra_words=()):
-    """제외 대상 파일인지 판단(OS 잔여물 + 사용자가 지정한 단어 포함 파일)."""
-    low = name.lower()
-    if low in EXCLUDE_FILE_NAMES or any(
-            low.startswith(p) for p in EXCLUDE_FILE_PREFIXES):
-        return True
-    return any(w in low for w in extra_words)
-
-
-def list_relative_files(root, exclude_dirs=(), exclude_files=()):
-    """root 아래의 모든 파일을 root 기준 상대경로 set 으로 반환(제외 항목 제외)."""
+def list_relative_files(root):
+    """root 아래의 모든 파일을 root 기준 상대경로 set 으로 반환(임시/잔여물 제외)."""
     result = set()
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames
-                       if not _is_excluded_dir(d, exclude_dirs)]
+        dirnames[:] = [d for d in dirnames if not _is_excluded_dir(d)]
         for name in filenames:
-            if _is_excluded_file(name, exclude_files):
+            if _is_excluded_file(name):
                 continue
             full = os.path.join(dirpath, name)
             result.add(os.path.relpath(full, root))
     return result
 
 
-def list_relative_dirs(root, exclude_dirs=(), exclude_files=()):
-    """root 아래의 모든 하위 폴더를 root 기준 상대경로 set 으로 반환(제외 폴더 제외)."""
+def list_relative_dirs(root):
+    """root 아래의 모든 하위 폴더를 root 기준 상대경로 set 으로 반환(임시 폴더 제외)."""
     result = set()
     for dirpath, dirnames, _filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames
-                       if not _is_excluded_dir(d, exclude_dirs)]
+        dirnames[:] = [d for d in dirnames if not _is_excluded_dir(d)]
         for name in dirnames:
             full = os.path.join(dirpath, name)
             result.add(os.path.relpath(full, root))
@@ -195,14 +179,10 @@ class SyncPlan:
     overwrite=False : 동일 파일명이 있으면 무조건 건너뛰기
     """
 
-    def __init__(self, src, dst, overwrite=True,
-                 exclude_dirs=(), exclude_files=()):
+    def __init__(self, src, dst, overwrite=True):
         self.src = src
         self.dst = dst
         self.overwrite = overwrite
-        # 이름에 포함되면 원본/대상 양쪽 모두 건너뛸 단어 목록
-        self.exclude_dirs = tuple(exclude_dirs)
-        self.exclude_files = tuple(exclude_files)
         self.to_copy = []        # 새로 추가된 파일
         self.to_update = []      # 변경되어 덮어쓸 파일
         self.to_skip = []        # 동일/건너뛸 파일
@@ -210,11 +190,8 @@ class SyncPlan:
         self.dirs_to_delete = []  # 대상에만 있어 삭제할 폴더
 
     def build(self):
-        src_files = list_relative_files(
-            self.src, self.exclude_dirs, self.exclude_files)
-        dst_files = list_relative_files(
-            self.dst, self.exclude_dirs, self.exclude_files) \
-            if os.path.isdir(self.dst) else set()
+        src_files = list_relative_files(self.src)
+        dst_files = list_relative_files(self.dst) if os.path.isdir(self.dst) else set()
 
         for rel in sorted(src_files):
             s = os.path.join(self.src, rel)
@@ -232,11 +209,8 @@ class SyncPlan:
         for rel in sorted(dst_files - src_files):
             self.to_delete.append(rel)
 
-        src_dirs = list_relative_dirs(
-            self.src, self.exclude_dirs, self.exclude_files)
-        dst_dirs = list_relative_dirs(
-            self.dst, self.exclude_dirs, self.exclude_files) \
-            if os.path.isdir(self.dst) else set()
+        src_dirs = list_relative_dirs(self.src)
+        dst_dirs = list_relative_dirs(self.dst) if os.path.isdir(self.dst) else set()
         self.dirs_to_delete = sorted(dst_dirs - src_dirs, reverse=True)
 
 
@@ -321,9 +295,6 @@ class App:
         self.confirm_delete_var = tk.BooleanVar(value=cfg.get("confirm_delete", True))
         # 동일 파일명 처리: "skip" = 무조건 건너뛰기, "diff" = 다르면 덮어쓰기
         self.conflict_mode = tk.StringVar(value=cfg.get("conflict_mode", "diff"))
-        # 이름에 이 단어를 포함하면 원본/대상 양쪽에서 건너뛴다(콤마로 구분).
-        self.exclude_dirs_var = tk.StringVar(value=cfg.get("exclude_dirs", ""))
-        self.exclude_files_var = tk.StringVar(value=cfg.get("exclude_files", ""))
         self.src_input = tk.StringVar()
         self.dst_input = tk.StringVar()
 
@@ -410,7 +381,7 @@ class App:
     def _card(self, parent, pady=(0, 7)):
         # 배경과 거의 같은 톤 + 옅은 경계선으로 부드럽게 떠 있는 느낌을 근사
         card = ctk.CTkFrame(parent, fg_color=CARD, corner_radius=16,
-                            border_width=1, border_color="#E0E0E0")
+                            border_width=1, border_color=SHADOW)
         card.pack(fill="x", pady=pady)
         return card
 
@@ -422,9 +393,9 @@ class App:
                         text_color=TEAL_SOFT, border_width=2, border_color=TEAL_SOFT,
                         text_color_disabled=MUTED)
         elif primary:
-            # 강조: 연한 청록 바탕 + 청록 글씨/테두리 (큰 청록 면 아님)
+            # 강조: 네이비 채움 + 밝은 크림 글씨 (시안 2a)
             opts = dict(fg_color=PRIMARY_FILL, hover_color=PRIMARY_HOVER,
-                        text_color=TEAL, border_width=1, border_color=TEAL,
+                        text_color=PRIMARY_TEXT, border_width=0,
                         text_color_disabled=MUTED)
         else:
             # 일반: 옅은 회색 바탕 + 청록 글씨
@@ -444,11 +415,13 @@ class App:
                             text_color=LOG_TEXT, border_color=SHADOW, border_width=1)
 
     def _check(self, parent, text, var):
-        return ctk.CTkCheckBox(parent, text=text, variable=var,
-                               command=self._persist, font=self.font_n,
-                               text_color=TEXT, fg_color=TEAL, hover_color=TEAL_DARK,
-                               checkmark_color="#FFFFFF", border_color=SHADOW,
-                               corner_radius=6, checkbox_width=18, checkbox_height=18)
+        # 시안 2a: 체크박스 대신 토글 스위치
+        return ctk.CTkSwitch(parent, text=text, variable=var,
+                             command=self._persist, font=self.font_n,
+                             text_color=TEXT, progress_color=TEAL,
+                             fg_color=SHADOW, button_color="#FFFFFF",
+                             button_hover_color=HILIGHT,
+                             switch_width=40, switch_height=20)
 
     def _radio(self, parent, text, value):
         return ctk.CTkRadioButton(parent, text=text, variable=self.sched_mode,
@@ -457,12 +430,37 @@ class App:
                                   border_color=SHADOW, radiobutton_width=20,
                                   radiobutton_height=20)
 
-    def _mode_radio(self, parent, text, value):
-        return ctk.CTkRadioButton(parent, text=text, variable=self.conflict_mode,
-                                  value=value, command=self._persist, font=self.font_n,
-                                  text_color=TEXT, fg_color=TEAL, hover_color=TEAL_DARK,
-                                  border_color=SHADOW, radiobutton_width=20,
-                                  radiobutton_height=20)
+    def _mode_segment(self, parent):
+        """시안 2a: '건너뛰기/덮어쓰기' 선택을 알약형 세그먼트 컨트롤로."""
+        track = ctk.CTkFrame(parent, fg_color=INSET, corner_radius=17)
+        self._seg_btns = {}
+
+        def make(value, text):
+            b = ctk.CTkButton(track, text=text, height=28, corner_radius=14,
+                              border_width=0, font=self.font_n,
+                              command=lambda v=value: self._select_mode(v))
+            b.pack(side="left", expand=True, fill="x", padx=3, pady=3)
+            self._seg_btns[value] = b
+
+        make("skip", "같은 파일 건너뛰기")
+        make("diff", "다르면 덮어쓰기")
+        self._apply_mode_styles()
+        return track
+
+    def _select_mode(self, value):
+        self.conflict_mode.set(value)
+        self._apply_mode_styles()
+        self._persist()
+
+    def _apply_mode_styles(self):
+        cur = self.conflict_mode.get()
+        for value, b in self._seg_btns.items():
+            if value == cur:
+                b.configure(fg_color=TEAL, hover_color=TEAL_DARK,
+                            text_color=PRIMARY_TEXT, font=self.font_b)
+            else:
+                b.configure(fg_color=INSET, hover_color=BTN_HOVER,
+                            text_color=MUTED, font=self.font_n)
 
     def _label(self, parent, text, font=None, fg=TEXT, bg=None):
         return ctk.CTkLabel(parent, text=text, font=font or self.font_n,
@@ -473,9 +471,17 @@ class App:
         main = ctk.CTkFrame(self.root, fg_color=BG, corner_radius=0)
         main.pack(fill="both", expand=True, padx=16, pady=12)
 
-        # 헤더
-        self._label(main, "폴더 동기화", font=self.font_title, fg=TEAL).pack(
-            anchor="w", pady=(0, 8))
+        # 헤더: 제목 + 오른쪽 상태 칩 (시안 2a)
+        head = ctk.CTkFrame(main, fg_color="transparent")
+        head.pack(fill="x", pady=(0, 8))
+        tbox = ctk.CTkFrame(head, fg_color="transparent")
+        tbox.pack(side="left")
+        self._label(tbox, "폴더 동기화", font=self.font_title, fg=TEAL).pack(anchor="w")
+        self._label(tbox, "SSD → D드라이브", font=self.font_small,
+                    fg=MUTED).pack(anchor="w")
+        ctk.CTkLabel(head, textvariable=self.status_var, font=self.font_small,
+                     text_color=TEXT, fg_color=INSET, corner_radius=13,
+                     height=26, padx=12).pack(side="right")
 
         # 폴더 선택 카드
         c = self._card(main)
@@ -527,42 +533,12 @@ class App:
         c = self._card(main)
         self._label(c, "같은 이름의 파일이 대상에 있을 때",
                     font=self.font_b, fg=TEXT).pack(anchor="w", padx=14, pady=(10, 3))
-        self._mode_radio(c, "무조건 건너뛰기", "skip").pack(anchor="w", padx=14, pady=1)
-        self._mode_radio(c, "파일 용량 또는 수정일자가 다르면 덮어쓰기", "diff").pack(
-            anchor="w", padx=14, pady=(1, 6))
+        self._mode_segment(c).pack(fill="x", padx=14, pady=(2, 8))
         ctk.CTkFrame(c, height=1, fg_color=SHADOW).pack(fill="x", padx=14, pady=2)
         self._check(c, "원본에서 삭제된 파일을 대상에서도 삭제",
                     self.delete_var).pack(anchor="w", padx=14, pady=(6, 3))
         self._check(c, "삭제 전 확인 (켜면 삭제 직전에 한 번 물어봅니다)",
                     self.confirm_delete_var).pack(anchor="w", padx=14, pady=(0, 9))
-
-        # 제외 카드 (특정 단어를 포함한 폴더명/파일명 건너뛰기)
-        c = self._card(main)
-        c.grid_columnconfigure(1, weight=1)
-        self._label(c, "동기화에서 제외할 이름 (원본·대상 모두 건너뜀)",
-                    font=self.font_b, fg=TEXT).grid(
-            row=0, column=0, columnspan=2, sticky="w", padx=14, pady=(10, 3))
-        self._label(c, "폴더 이름").grid(row=1, column=0, sticky="w",
-                                     padx=(14, 8), pady=4)
-        ex_dir_entry = self._entry(c, self.exclude_dirs_var)
-        ex_dir_entry.grid(row=1, column=1, sticky="ew", padx=(0, 14), pady=4)
-        Tooltip(ex_dir_entry,
-                "이 단어를 이름에 포함하는 폴더는 통째로 건너뜁니다.\n"
-                "콤마(,)로 여러 개 지정 (예: temp, 캐시, __pycache__)",
-                self.font_small)
-        self._label(c, "파일 이름").grid(row=2, column=0, sticky="w",
-                                     padx=(14, 8), pady=4)
-        ex_file_entry = self._entry(c, self.exclude_files_var)
-        ex_file_entry.grid(row=2, column=1, sticky="ew", padx=(0, 14), pady=4)
-        Tooltip(ex_file_entry,
-                "이 단어를 이름에 포함하는 파일은 건너뜁니다.\n"
-                "콤마(,)로 여러 개 지정 (예: .tmp, 사본, backup)",
-                self.font_small)
-        self._label(c, "콤마(,)로 여러 단어를 지정할 수 있습니다. 대소문자 구분 없음.",
-                    font=self.font_small, fg=MUTED).grid(
-            row=3, column=0, columnspan=2, sticky="w", padx=14, pady=(2, 10))
-        ex_dir_entry.bind("<FocusOut>", lambda _e: self._persist())
-        ex_file_entry.bind("<FocusOut>", lambda _e: self._persist())
 
         # 예약 카드
         c = self._card(main)
@@ -579,31 +555,17 @@ class App:
                      text_color=MUTED).grid(row=2, column=0, columnspan=6, sticky="w",
                                             padx=14, pady=(4, 9))
 
-        # 실행 버튼
-        af = ctk.CTkFrame(main, fg_color="transparent")
-        af.pack(fill="x", pady=(2, 10))
-        self.preview_btn = self._button(
-            af, "미리보기", self.preview,
-            "실제 복사·삭제 없이 변경될 파일만 먼저 확인합니다", width=120)
-        self.preview_btn.pack(side="left")
-        self.stop_btn = self._button(
-            af, "멈추기", self.stop_sync,
-            "진행 중인 동기화를 중지합니다", danger=True, width=120)
-        self.stop_btn.configure(state="disabled")
-        self.stop_btn.pack(side="right")
-        self.sync_btn = self._button(
-            af, "전체 동기화 시작", self.start_sync,
-            "목록의 모든 폴더를 동기화합니다 (추가·변경 복사, 삭제 반영)",
-            primary=True)
-        self.sync_btn.pack(side="left", padx=(10, 8), fill="x", expand=True)
-
-        # 진행 표시줄 + 퍼센트/남은 시간
-        self.progress = ctk.CTkProgressBar(main, height=14, corner_radius=8,
-                                           fg_color=INSET, progress_color=TEAL)
-        self.progress.set(0)
-        self.progress.pack(fill="x", pady=(0, 2))
-        ctk.CTkLabel(main, textvariable=self.progress_var, font=self.font_small,
-                     text_color=TEXT, anchor="w").pack(fill="x", pady=(0, 6))
+        # 진행 카드: 원형 다이얼 + 퍼센트/남은 시간 (시안 2a)
+        c = self._card(main)
+        pf = ctk.CTkFrame(c, fg_color="transparent")
+        pf.pack(fill="x", padx=14, pady=10)
+        self.dial = tk.Canvas(pf, width=64, height=64, bg=CARD,
+                              highlightthickness=0, bd=0)
+        self.dial.pack(side="left")
+        self._set_dial(0.0)
+        ctk.CTkLabel(pf, textvariable=self.progress_var, font=self.font_n,
+                     text_color=TEXT, anchor="w", justify="left").pack(
+            side="left", fill="x", expand=True, padx=(14, 0))
 
         # 로그 카드
         c = self._card(main, pady=(0, 8))
@@ -618,9 +580,23 @@ class App:
         sb.pack(side="right", fill="y", pady=6, padx=(0, 4))
         self.log.configure(yscrollcommand=sb.set)
 
-        # 상태 표시줄
-        ctk.CTkLabel(main, textvariable=self.status_var, font=self.font_small,
-                     text_color=MUTED, anchor="w").pack(fill="x")
+        # 실행 버튼 (하단 바, 시안 2a) — 상태는 상단 칩에 표시
+        af = ctk.CTkFrame(main, fg_color="transparent")
+        af.pack(fill="x", pady=(2, 2))
+        self.preview_btn = self._button(
+            af, "미리보기", self.preview,
+            "실제 복사·삭제 없이 변경될 파일만 먼저 확인합니다", width=120)
+        self.preview_btn.pack(side="left")
+        self.stop_btn = self._button(
+            af, "멈추기", self.stop_sync,
+            "진행 중인 동기화를 중지합니다", danger=True, width=120)
+        self.stop_btn.configure(state="disabled")
+        self.stop_btn.pack(side="right")
+        self.sync_btn = self._button(
+            af, "전체 동기화 시작", self.start_sync,
+            "목록의 모든 폴더를 동기화합니다 (추가·변경 복사, 삭제 반영)",
+            primary=True)
+        self.sync_btn.pack(side="left", padx=(10, 8), fill="x", expand=True)
 
     # ---------------- 폴더 선택 / 쌍 관리 ----------------
     def browse_src(self):
@@ -701,8 +677,6 @@ class App:
             "delete_enabled": self.delete_var.get(),
             "confirm_delete": self.confirm_delete_var.get(),
             "conflict_mode": self.conflict_mode.get(),
-            "exclude_dirs": self.exclude_dirs_var.get().strip(),
-            "exclude_files": self.exclude_files_var.get().strip(),
             "sched_enabled": self.sched_enabled.get(),
             "sched_mode": self.sched_mode.get(),
             "sched_time": self.sched_time.get().strip(),
@@ -813,25 +787,17 @@ class App:
         self.busy = True
         self._cancel.clear()
         overwrite = self.conflict_mode.get() == "diff"
-        exclude_dirs = parse_exclude_words(self.exclude_dirs_var.get())
-        exclude_files = parse_exclude_words(self.exclude_files_var.get())
         self.progress_var.set("")
         self.set_status("변경사항 분석 중...")
         self._set_buttons(False)
-        threading.Thread(
-            target=self._preview_worker,
-            args=(pairs, overwrite, exclude_dirs, exclude_files),
-            daemon=True).start()
+        threading.Thread(target=self._preview_worker, args=(pairs, overwrite),
+                         daemon=True).start()
 
-    def _preview_worker(self, pairs, overwrite, exclude_dirs, exclude_files):
+    def _preview_worker(self, pairs, overwrite):
         try:
-            if exclude_dirs:
-                self.log_msg(f"[제외] 폴더 이름 포함: {', '.join(exclude_dirs)}")
-            if exclude_files:
-                self.log_msg(f"[제외] 파일 이름 포함: {', '.join(exclude_files)}")
             tot_copy = tot_update = tot_skip = tot_delete = 0
             for src, dst in pairs:
-                plan = SyncPlan(src, dst, overwrite, exclude_dirs, exclude_files)
+                plan = SyncPlan(src, dst, overwrite)
                 plan.build()
                 tot_copy += len(plan.to_copy)
                 tot_update += len(plan.to_update)
@@ -874,25 +840,16 @@ class App:
         delete_enabled = self.delete_var.get()
         confirm_delete = self.confirm_delete_var.get()
         overwrite = self.conflict_mode.get() == "diff"
-        exclude_dirs = parse_exclude_words(self.exclude_dirs_var.get())
-        exclude_files = parse_exclude_words(self.exclude_files_var.get())
-        threading.Thread(
-            target=self._sync_worker,
-            args=(pairs, delete_enabled, confirm_delete, overwrite,
-                  exclude_dirs, exclude_files),
-            daemon=True).start()
+        threading.Thread(target=self._sync_worker,
+                         args=(pairs, delete_enabled, confirm_delete, overwrite),
+                         daemon=True).start()
 
-    def _sync_worker(self, pairs, delete_enabled, confirm_delete, overwrite,
-                     exclude_dirs, exclude_files):
+    def _sync_worker(self, pairs, delete_enabled, confirm_delete, overwrite):
         try:
-            if exclude_dirs:
-                self.log_msg(f"[제외] 폴더 이름 포함: {', '.join(exclude_dirs)}")
-            if exclude_files:
-                self.log_msg(f"[제외] 파일 이름 포함: {', '.join(exclude_files)}")
             plans = []
             for src, dst in pairs:
                 os.makedirs(dst, exist_ok=True)
-                plan = SyncPlan(src, dst, overwrite, exclude_dirs, exclude_files)
+                plan = SyncPlan(src, dst, overwrite)
                 plan.build()
                 plans.append(plan)
 
@@ -1038,11 +995,24 @@ class App:
             return f"{seconds // 60}분 {seconds % 60}초"
         return f"{seconds // 3600}시간 {(seconds % 3600) // 60}분"
 
+    # ---------------- 원형 진행률 다이얼 (시안 2a) ----------------
+    def _set_dial(self, frac):
+        d = self.dial
+        d.delete("all")
+        # 배경 링
+        d.create_oval(6, 6, 58, 58, outline=SHADOW, width=4)
+        if frac > 0:
+            extent = -359.9 if frac >= 1.0 else -frac * 360
+            d.create_arc(6, 6, 58, 58, start=90, extent=extent,
+                         style="arc", outline=TEAL, width=5)
+        d.create_text(32, 32, text=f"{int(frac * 100)}%", fill=TEAL,
+                      font=(FONT_FAMILY, 11, "bold"))
+
     def _set_progress_max(self, total):
         self._total = max(total, 1)
         self._start_time = time.time()
         self._last_emit = 0.0
-        self._ui(lambda: (self.progress.set(0), self.progress_var.set("0%")))
+        self._ui(lambda: (self._set_dial(0.0), self.progress_var.set("0%")))
 
     def _emit_progress(self, done, force=False):
         now = time.time()
@@ -1060,7 +1030,7 @@ class App:
             text = f"100%   ·   완료   ({total}/{total})"
         else:
             text = f"{pct}%   ({done}/{total})"
-        self._ui(lambda: (self.progress.set(frac), self.progress_var.set(text)))
+        self._ui(lambda: (self._set_dial(frac), self.progress_var.set(text)))
 
 
 def main():
