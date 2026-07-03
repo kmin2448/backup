@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-폴더 동기화 프로그램 (SSD -> D드라이브)
+폴더 동기화 프로그램
 
 기능:
   - 여러 개의 (원본 -> 대상) 폴더 쌍을 등록해 두고 버튼 하나로 한꺼번에 동기화
@@ -306,7 +306,7 @@ class Tooltip:
 class App:
     def __init__(self, root):
         self.root = root
-        root.title("폴더 동기화 (SSD → D드라이브)")
+        root.title("폴더 동기화")
         try:
             root.configure(fg_color=BG)
         except Exception:
@@ -511,8 +511,6 @@ class App:
         self.title_box = tbox = ctk.CTkFrame(head, fg_color="transparent")
         tbox.pack(side="left")
         self._label(tbox, "폴더 동기화", font=self.font_title, fg=TEAL).pack(anchor="w")
-        self._label(tbox, "SSD → D드라이브", font=self.font_small,
-                    fg=MUTED).pack(anchor="w")
         # 최소화/펼치기 토글 (누르면 진행률·로그·실행버튼만 남는 컴팩트 모드)
         self.min_btn = self._button(
             head, "▁  최소화", self.toggle_compact,
@@ -535,13 +533,13 @@ class App:
                                       padx=(14, 8), pady=(11, 5))
         self._entry(c, self.src_input).grid(row=0, column=1, sticky="ew", pady=(11, 5))
         self._button(c, "찾아보기", self.browse_src,
-                     "동기화할 원본(SSD) 폴더를 선택합니다", width=92).grid(
+                     "동기화할 원본 폴더를 선택합니다", width=92).grid(
             row=0, column=2, padx=(8, 14), pady=(11, 5))
         self._label(c, "대상 폴더").grid(row=1, column=0, sticky="w",
                                       padx=(14, 8), pady=5)
         self._entry(c, self.dst_input).grid(row=1, column=1, sticky="ew", pady=5)
         self._button(c, "찾아보기", self.browse_dst,
-                     "복사될 대상(D드라이브) 폴더를 선택합니다", width=92).grid(
+                     "복사될 대상 폴더를 선택합니다", width=92).grid(
             row=1, column=2, padx=(8, 14), pady=5)
         self._button(c, "＋  목록에 추가", self.add_pair,
                      "위에서 고른 원본·대상 폴더를 동기화 목록에 추가합니다",
@@ -702,14 +700,14 @@ class App:
     # ---------------- 폴더 선택 / 쌍 관리 ----------------
     def browse_src(self):
         p = filedialog.askdirectory(
-            title="원본 폴더(SSD) 선택",
+            title="원본 폴더 선택",
             initialdir=self.src_input.get() or os.path.expanduser("~"))
         if p:
             self.src_input.set(p)
 
     def browse_dst(self):
         p = filedialog.askdirectory(
-            title="대상 폴더(D드라이브) 선택",
+            title="대상 폴더 선택",
             initialdir=self.dst_input.get() or os.path.expanduser("~"))
         if p:
             self.dst_input.set(p)
