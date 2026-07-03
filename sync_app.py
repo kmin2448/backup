@@ -158,20 +158,6 @@ def list_relative_dirs(root, exclude_dirs=(), exclude_files=()):
     return result
 
 
-def files_identical(src, dst):
-    """두 파일이 동일한지 빠르게 판단 (크기 + 수정시간)."""
-    try:
-        s = os.stat(src)
-        d = os.stat(dst)
-    except OSError:
-        return False
-    if s.st_size != d.st_size:
-        return False
-    if abs(s.st_mtime - d.st_mtime) > MTIME_TOLERANCE:
-        return False
-    return True
-
-
 def validate_pair(src, dst):
     """폴더 쌍의 유효성 검사. 문제가 있으면 오류 메시지를, 없으면 None 을 반환."""
     if not src or not dst:
@@ -189,18 +175,47 @@ def validate_pair(src, dst):
     return None
 
 
+# 같은 이름의 파일이 대상에 있을 때의 처리 방식.
+#   skip  : 무조건 건너뛰기(덮어쓰지 않음)
+#   diff  : 크기 또는 수정일자가 다르면 덮어쓰기
+#   newer : 원본이 대상보다 더 최근(수정시간)일 때만 덮어쓰기
+#   size  : 파일 크기가 다를 때만 덮어쓰기
+CONFLICT_MODES = ("skip", "diff", "newer", "size")
+
+
+def should_overwrite(src, dst, mode):
+    """같은 이름의 파일에 대해 mode 에 따라 덮어쓸지 결정한다."""
+    if mode == "skip":
+        return False
+    try:
+        s = os.stat(src)
+        d = os.stat(dst)
+    except OSError:
+        # 상태를 못 읽으면 안전하게 덮어쓰기(복사) 시도
+        return True
+    if mode == "size":
+        return s.st_size != d.st_size
+    if mode == "newer":
+        return s.st_mtime - d.st_mtime > MTIME_TOLERANCE
+    # 기본 "diff": 크기 또는 수정시간이 다르면 덮어쓰기
+    if s.st_size != d.st_size:
+        return True
+    return abs(s.st_mtime - d.st_mtime) > MTIME_TOLERANCE
+
+
 class SyncPlan:
     """소스/대상을 비교해서 해야 할 작업 목록을 만든다.
 
-    overwrite=True  : 동일 파일명이 있을 때 용량/수정일자가 다르면 덮어쓰기
-    overwrite=False : 동일 파일명이 있으면 무조건 건너뛰기
+    conflict_mode 는 같은 이름의 파일이 대상에 있을 때의 처리 방식.
+    (skip / diff / newer / size — CONFLICT_MODES 참고)
     """
 
-    def __init__(self, src, dst, overwrite=True,
+    def __init__(self, src, dst, conflict_mode="diff",
                  exclude_dirs=(), exclude_files=()):
         self.src = src
         self.dst = dst
-        self.overwrite = overwrite
+        self.conflict_mode = conflict_mode if conflict_mode in CONFLICT_MODES \
+            else "diff"
         # 이름에 포함되면 원본/대상 양쪽 모두 건너뛸 단어 목록
         self.exclude_dirs = tuple(exclude_dirs)
         self.exclude_files = tuple(exclude_files)
@@ -222,13 +237,10 @@ class SyncPlan:
             d = os.path.join(self.dst, rel)
             if rel not in dst_files:
                 self.to_copy.append(rel)
-            elif not self.overwrite:
-                # 동일 파일명 → 무조건 건너뛰기
-                self.to_skip.append(rel)
-            elif files_identical(s, d):
-                self.to_skip.append(rel)
-            else:
+            elif should_overwrite(s, d, self.conflict_mode):
                 self.to_update.append(rel)
+            else:
+                self.to_skip.append(rel)
 
         for rel in sorted(dst_files - src_files):
             self.to_delete.append(rel)
@@ -462,37 +474,13 @@ class App:
                                   border_color=SHADOW, radiobutton_width=20,
                                   radiobutton_height=20)
 
-    def _mode_segment(self, parent):
-        """시안 2a: '건너뛰기/덮어쓰기' 선택을 알약형 세그먼트 컨트롤로."""
-        track = ctk.CTkFrame(parent, fg_color=INSET, corner_radius=17)
-        self._seg_btns = {}
-
-        def make(value, text):
-            b = ctk.CTkButton(track, text=text, height=28, corner_radius=14,
-                              border_width=0, font=self.font_n,
-                              command=lambda v=value: self._select_mode(v))
-            b.pack(side="left", expand=True, fill="x", padx=3, pady=3)
-            self._seg_btns[value] = b
-
-        make("skip", "같은 파일 건너뛰기")
-        make("diff", "다르면 덮어쓰기")
-        self._apply_mode_styles()
-        return track
-
-    def _select_mode(self, value):
-        self.conflict_mode.set(value)
-        self._apply_mode_styles()
-        self._persist()
-
-    def _apply_mode_styles(self):
-        cur = self.conflict_mode.get()
-        for value, b in self._seg_btns.items():
-            if value == cur:
-                b.configure(fg_color=TEAL, hover_color=TEAL_DARK,
-                            text_color=PRIMARY_TEXT, font=self.font_b)
-            else:
-                b.configure(fg_color=INSET, hover_color=BTN_HOVER,
-                            text_color=MUTED, font=self.font_n)
+    def _conflict_radio(self, parent, text, value):
+        """같은 이름 파일 처리 방식(conflict_mode) 라디오 버튼."""
+        return ctk.CTkRadioButton(parent, text=text, variable=self.conflict_mode,
+                                  value=value, command=self._persist, font=self.font_n,
+                                  text_color=TEXT, fg_color=TEAL, hover_color=TEAL_DARK,
+                                  border_color=SHADOW, radiobutton_width=20,
+                                  radiobutton_height=20)
 
     def _label(self, parent, text, font=None, fg=TEXT, bg=None):
         return ctk.CTkLabel(parent, text=text, font=font or self.font_n,
@@ -576,7 +564,14 @@ class App:
         c = self._card(full)
         self._label(c, "같은 이름의 파일이 대상에 있을 때",
                     font=self.font_b, fg=TEXT).pack(anchor="w", padx=14, pady=(10, 3))
-        self._mode_segment(c).pack(fill="x", padx=14, pady=(2, 8))
+        self._conflict_radio(c, "무조건 건너뛰기 (덮어쓰지 않음)", "skip").pack(
+            anchor="w", padx=14, pady=1)
+        self._conflict_radio(c, "크기 또는 수정일자가 다르면 덮어쓰기", "diff").pack(
+            anchor="w", padx=14, pady=1)
+        self._conflict_radio(c, "원본이 더 최근(수정날짜)일 때만 덮어쓰기", "newer").pack(
+            anchor="w", padx=14, pady=1)
+        self._conflict_radio(c, "파일 크기가 다를 때만 덮어쓰기", "size").pack(
+            anchor="w", padx=14, pady=(1, 8))
         ctk.CTkFrame(c, height=1, fg_color=SHADOW).pack(fill="x", padx=14, pady=2)
         self._check(c, "원본에서 삭제된 파일을 대상에서도 삭제",
                     self.delete_var).pack(anchor="w", padx=14, pady=(6, 3))
@@ -887,7 +882,7 @@ class App:
             return
         self.busy = True
         self._cancel.clear()
-        overwrite = self.conflict_mode.get() == "diff"
+        conflict_mode = self.conflict_mode.get()
         exclude_dirs = parse_exclude_words(self.exclude_dirs_var.get())
         exclude_files = parse_exclude_words(self.exclude_files_var.get())
         self.progress_var.set("")
@@ -895,10 +890,10 @@ class App:
         self._set_buttons(False)
         threading.Thread(
             target=self._preview_worker,
-            args=(pairs, overwrite, exclude_dirs, exclude_files),
+            args=(pairs, conflict_mode, exclude_dirs, exclude_files),
             daemon=True).start()
 
-    def _preview_worker(self, pairs, overwrite, exclude_dirs, exclude_files):
+    def _preview_worker(self, pairs, conflict_mode, exclude_dirs, exclude_files):
         try:
             if exclude_dirs:
                 self.log_msg(f"[제외] 폴더 이름 포함: {', '.join(exclude_dirs)}")
@@ -906,7 +901,7 @@ class App:
                 self.log_msg(f"[제외] 파일 이름 포함: {', '.join(exclude_files)}")
             tot_copy = tot_update = tot_skip = tot_delete = 0
             for src, dst in pairs:
-                plan = SyncPlan(src, dst, overwrite, exclude_dirs, exclude_files)
+                plan = SyncPlan(src, dst, conflict_mode, exclude_dirs, exclude_files)
                 plan.build()
                 tot_copy += len(plan.to_copy)
                 tot_update += len(plan.to_update)
@@ -948,16 +943,16 @@ class App:
         self._set_buttons(False, allow_stop=True)
         delete_enabled = self.delete_var.get()
         confirm_delete = self.confirm_delete_var.get()
-        overwrite = self.conflict_mode.get() == "diff"
+        conflict_mode = self.conflict_mode.get()
         exclude_dirs = parse_exclude_words(self.exclude_dirs_var.get())
         exclude_files = parse_exclude_words(self.exclude_files_var.get())
         threading.Thread(
             target=self._sync_worker,
-            args=(pairs, delete_enabled, confirm_delete, overwrite,
+            args=(pairs, delete_enabled, confirm_delete, conflict_mode,
                   exclude_dirs, exclude_files),
             daemon=True).start()
 
-    def _sync_worker(self, pairs, delete_enabled, confirm_delete, overwrite,
+    def _sync_worker(self, pairs, delete_enabled, confirm_delete, conflict_mode,
                      exclude_dirs, exclude_files):
         try:
             if exclude_dirs:
@@ -967,7 +962,7 @@ class App:
             plans = []
             for src, dst in pairs:
                 os.makedirs(dst, exist_ok=True)
-                plan = SyncPlan(src, dst, overwrite, exclude_dirs, exclude_files)
+                plan = SyncPlan(src, dst, conflict_mode, exclude_dirs, exclude_files)
                 plan.build()
                 plans.append(plan)
 
