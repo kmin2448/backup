@@ -4,7 +4,9 @@ name: Build Windows EXE
 # 아티팩트로 올리고, "exe-latest" 릴리스에 첨부해 누구나 내려받을 수 있게 한다.
 on:
   push:
-    branches: [ "claude/affectionate-lamport-e6xmq6" ]
+    branches:
+      - "claude/affectionate-lamport-e6xmq6"
+      - "claude/zip-sync-exclusion-8rbyi6"
     paths:
       - "sync_app.py"
       - "assets/**"
