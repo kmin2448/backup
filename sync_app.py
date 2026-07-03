@@ -253,6 +253,124 @@ class SyncPlan:
         self.dirs_to_delete = sorted(dst_dirs - src_dirs, reverse=True)
 
 
+# ===================== 이름 일괄 변경 =====================
+# 지정한 루트 폴더 "바로 아래"의 폴더 또는 파일 이름을 일괄로 바꾼다.
+# (그 아래(하위 폴더 내부)는 건드리지 않는다.)
+
+def list_immediate_names(root, want_dir):
+    """root 바로 아래의 이름 목록(정렬). want_dir=True면 폴더만, False면 파일만."""
+    out = []
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return out
+    for name in sorted(names):
+        p = os.path.join(root, name)
+        try:
+            is_dir = os.path.isdir(p)
+        except OSError:
+            continue
+        if is_dir == want_dir:
+            out.append(name)
+    return out
+
+
+def _rename_target(old, want_dir, op, new_name, find, replace):
+    """한 항목의 원하는(충돌 해소 전) 새 이름을 계산한다."""
+    if op == "set":
+        if want_dir:
+            return new_name
+        # 파일은 확장자를 보존하고 이름 부분만 교체
+        _stem, ext = os.path.splitext(old)
+        return new_name + ext
+    # op == "replace": 이름 안의 특정 단어를 다른 단어로 치환
+    if not find:
+        return old
+    return old.replace(find, replace)
+
+
+def build_rename_plan(root, want_dir, op, new_name="", find="", replace=""):
+    """(old, new) 변경 목록을 만든다.
+
+    - 같은 이름으로 겹치거나 기존 항목과 충돌하면 앞에 "1_", "2_" … 를 붙여 구분.
+    - 실제로 이름이 바뀌는 항목만 돌려준다.
+    """
+    if op == "set" and not new_name:
+        return []
+    if op == "replace" and not find:
+        return []
+
+    try:
+        all_names = set(os.listdir(root))
+    except OSError:
+        return []
+    names = list_immediate_names(root, want_dir)
+
+    desired = [(old, _rename_target(old, want_dir, op, new_name, find, replace))
+               for old in names]
+
+    if op == "replace":
+        changing = [(o, n) for o, n in desired if n and n != o]
+    else:  # set
+        changing = [(o, n) for o, n in desired if n]
+
+    moving_olds = {o for o, _ in changing}
+    reserved = set(all_names) - moving_olds   # 이동하지 않고 남는 이름들
+
+    dup_count = {}
+    for _o, n in changing:
+        dup_count[n] = dup_count.get(n, 0) + 1
+
+    taken = set(reserved)
+    counters = {}
+    result = []
+    for old, new in changing:
+        if dup_count[new] > 1 or new in taken:
+            k = counters.get(new, 0) + 1
+            cand = f"{k}_{new}"
+            while cand in taken:
+                k += 1
+                cand = f"{k}_{new}"
+            counters[new] = k
+            final = cand
+        else:
+            final = new
+        taken.add(final)
+        if final != old:
+            result.append((old, final))
+    return result
+
+
+def apply_rename_plan(root, changes):
+    """changes: [(old, new), …] 를 실제로 적용한다.
+
+    중간 충돌(A→B 인데 B가 아직 존재 등)을 피하려고 2단계(임시 이름 경유)로 바꾼다.
+    (done_count, errors) 를 돌려준다. errors: [(old, new, 사유), …]
+    """
+    done = 0
+    errors = []
+    temps = []
+    for i, (old, new) in enumerate(changes):
+        tmp = f".__bulk_rename_tmp_{i}__"
+        try:
+            os.rename(os.path.join(root, old), os.path.join(root, tmp))
+            temps.append((tmp, new, old))
+        except OSError as e:
+            errors.append((old, new, str(e)))
+    for tmp, new, old in temps:
+        try:
+            os.rename(os.path.join(root, tmp), os.path.join(root, new))
+            done += 1
+        except OSError as e:
+            errors.append((old, new, str(e)))
+            # 실패하면 원래 이름으로 되돌린다
+            try:
+                os.rename(os.path.join(root, tmp), os.path.join(root, old))
+            except OSError:
+                pass
+    return done, errors
+
+
 class Tooltip:
     """위젯에 마우스를 올리면 기능 설명을 말풍선으로 보여준다."""
 
@@ -359,9 +477,18 @@ class App:
         self.sched_status_var = tk.StringVar(value="")
         self.progress_var = tk.StringVar(value="")   # 진행률 % + 남은 시간
 
+        # 이름 일괄 변경(별도 화면) 상태
+        self.rn_root = tk.StringVar(value=cfg.get("rename_root", ""))
+        self.rn_target = tk.StringVar(value="dir")     # dir=폴더 / file=파일
+        self.rn_op = tk.StringVar(value="set")         # set=같은이름 / replace=단어치환
+        self.rn_newname = tk.StringVar()
+        self.rn_find = tk.StringVar()
+        self.rn_replace = tk.StringVar()
+
         self._setup_fonts()
         self._setup_style()
         self._build_ui()
+        self._build_rename_ui()
         self._refresh_tree()
         self._update_sched_status()
 
@@ -482,13 +609,21 @@ class App:
                                   border_color=SHADOW, radiobutton_width=20,
                                   radiobutton_height=20)
 
+    def _pradio(self, parent, text, var, value, command=None):
+        """임의의 StringVar 에 연결되는 라디오 버튼."""
+        return ctk.CTkRadioButton(parent, text=text, variable=var, value=value,
+                                  command=command, font=self.font_n, text_color=TEXT,
+                                  fg_color=TEAL, hover_color=TEAL_DARK,
+                                  border_color=SHADOW, radiobutton_width=20,
+                                  radiobutton_height=20)
+
     def _label(self, parent, text, font=None, fg=TEXT, bg=None):
         return ctk.CTkLabel(parent, text=text, font=font or self.font_n,
                             text_color=fg, fg_color="transparent")
 
     # ---------------- UI 구성 ----------------
     def _build_ui(self):
-        main = ctk.CTkFrame(self.root, fg_color=BG, corner_radius=0)
+        main = self.page_sync = ctk.CTkFrame(self.root, fg_color=BG, corner_radius=0)
         main.pack(fill="both", expand=True, padx=16, pady=12)
         self._main = main
 
@@ -504,6 +639,11 @@ class App:
             head, "▁  최소화", self.toggle_compact,
             "설정을 접고 진행률·로그·실행 버튼만 작은 창으로 표시합니다", width=96)
         self.min_btn.pack(side="right")
+        # 이름 일괄 변경 화면으로 넘어가는 버튼
+        self.nav_btn = self._button(
+            head, "이름 일괄변경  ▸", self.show_rename,
+            "폴더·파일 이름을 한 번에 바꾸는 화면으로 이동합니다", width=118)
+        self.nav_btn.pack(side="right", padx=(0, 8))
         self.status_chip = ctk.CTkLabel(
             head, textvariable=self.status_var, font=self.font_small,
             text_color=TEXT, fg_color=INSET, corner_radius=13, height=26, padx=12)
@@ -673,12 +813,14 @@ class App:
             self._full_geometry = self.root.geometry()
             self.full_frame.pack_forget()
             self.title_box.pack_forget()
+            self.nav_btn.pack_forget()
             self.min_btn.configure(text="▢  펼치기")
             self._resize_compact()
         else:
             # 설정 영역을 진행 카드 앞에 다시 끼워 넣는다
             self.full_frame.pack(fill="x", before=self.card_progress)
             self.title_box.pack(side="left")
+            self.nav_btn.pack(side="right", padx=(0, 8))
             self.min_btn.configure(text="▁  최소화")
             self.root.minsize(520, 460)
             if self._full_geometry:
@@ -691,6 +833,197 @@ class App:
         w = 460
         self.root.minsize(380, h)
         self.root.geometry(f"{w}x{h}")
+
+    # ---------------- 이름 일괄 변경 화면 ----------------
+    def _build_rename_ui(self):
+        page = self.page_rename = ctk.CTkFrame(self.root, fg_color=BG, corner_radius=0)
+        # 처음엔 숨겨 둔다(show_rename 시 표시).
+
+        # 헤더: 뒤로 가기 + 제목
+        head = ctk.CTkFrame(page, fg_color="transparent")
+        head.pack(fill="x", padx=16, pady=(12, 8))
+        self._button(head, "◂  동기화로", self.show_sync,
+                     "폴더 동기화 화면으로 돌아갑니다", width=104).pack(side="left")
+        self._label(head, "이름 일괄 변경", font=self.font_title, fg=TEAL).pack(
+            side="left", padx=(12, 0))
+
+        body = ctk.CTkFrame(page, fg_color=BG, corner_radius=0)
+        body.pack(fill="both", expand=True, padx=16, pady=(0, 12))
+
+        # 대상 루트 폴더 카드
+        c = self._card(body)
+        c.grid_columnconfigure(1, weight=1)
+        self._label(c, "대상 루트 폴더").grid(row=0, column=0, sticky="w",
+                                          padx=(14, 8), pady=(11, 4))
+        self._entry(c, self.rn_root).grid(row=0, column=1, sticky="ew", pady=(11, 4))
+        self._button(c, "찾아보기", self.browse_rename_root,
+                     "이름을 바꿀 폴더들이 들어있는 상위 폴더를 선택합니다",
+                     width=92).grid(row=0, column=2, padx=(8, 14), pady=(11, 4))
+        self._label(c, "이 폴더 바로 아래의 항목만 바꿉니다. 그 안(하위 폴더 내부)은 "
+                       "건드리지 않습니다.", font=self.font_small, fg=MUTED).grid(
+            row=1, column=0, columnspan=3, sticky="w", padx=14, pady=(0, 11))
+
+        # 대상 종류 카드
+        c = self._card(body)
+        self._label(c, "무엇의 이름을 바꿀까요?", font=self.font_b, fg=TEXT).pack(
+            anchor="w", padx=14, pady=(10, 3))
+        row = ctk.CTkFrame(c, fg_color="transparent")
+        row.pack(fill="x", padx=14, pady=(0, 10))
+        self._pradio(row, "폴더 이름", self.rn_target, "dir").pack(side="left")
+        self._pradio(row, "파일 이름", self.rn_target, "file").pack(
+            side="left", padx=(24, 0))
+
+        # 변경 방식 카드
+        c = self._card(body)
+        c.grid_columnconfigure(0, weight=1)
+        self._label(c, "변경 방식", font=self.font_b, fg=TEXT).grid(
+            row=0, column=0, columnspan=4, sticky="w", padx=14, pady=(10, 3))
+        # (1) 같은 이름으로 일괄 설정
+        self._pradio(c, "같은 이름으로 일괄 설정", self.rn_op, "set").grid(
+            row=1, column=0, columnspan=4, sticky="w", padx=14, pady=(2, 0))
+        self._label(c, "새 이름").grid(row=2, column=0, sticky="w",
+                                    padx=(38, 8), pady=4)
+        self._entry(c, self.rn_newname, width=200).grid(
+            row=2, column=1, sticky="w", pady=4)
+        self._label(c, "이름이 겹치면 앞에 1_, 2_ … 자동으로 붙습니다 "
+                       "(파일은 확장자 유지).", font=self.font_small, fg=MUTED).grid(
+            row=3, column=0, columnspan=4, sticky="w", padx=(38, 14), pady=(0, 6))
+        ctk.CTkFrame(c, height=1, fg_color=SHADOW).grid(
+            row=4, column=0, columnspan=4, sticky="ew", padx=14, pady=4)
+        # (2) 특정 단어 바꾸기
+        self._pradio(c, "특정 단어를 다른 단어로 바꾸기", self.rn_op, "replace").grid(
+            row=5, column=0, columnspan=4, sticky="w", padx=14, pady=(4, 0))
+        self._label(c, "바꿀 단어").grid(row=6, column=0, sticky="w",
+                                     padx=(38, 8), pady=(4, 11))
+        rrow = ctk.CTkFrame(c, fg_color="transparent")
+        rrow.grid(row=6, column=1, columnspan=3, sticky="w", pady=(4, 11))
+        self._entry(rrow, self.rn_find, width=150).pack(side="left")
+        self._label(rrow, "→").pack(side="left", padx=10)
+        self._entry(rrow, self.rn_replace, width=150).pack(side="left")
+
+        # 실행 버튼
+        af = ctk.CTkFrame(body, fg_color="transparent")
+        af.pack(fill="x", pady=(2, 6))
+        self._button(af, "미리보기", self.rename_preview,
+                     "실제로 바꾸기 전에 어떤 이름이 바뀔지 먼저 확인합니다",
+                     width=120).pack(side="left")
+        self._button(af, "일괄 변경 실행", self.rename_apply,
+                     "위 설정대로 이름을 실제로 바꿉니다", primary=True).pack(
+            side="left", padx=(10, 0), fill="x", expand=True)
+
+        # 결과/로그 카드
+        c = self._card(body, pady=(0, 0))
+        holder = ctk.CTkFrame(c, fg_color=INSET, corner_radius=10)
+        holder.pack(fill="both", expand=True, padx=10, pady=10)
+        self.rn_log = tk.Text(holder, height=8, font=self.font_log, bg=INSET,
+                              fg=LOG_TEXT, relief="flat", bd=0, highlightthickness=0,
+                              wrap="none", state="disabled")
+        self.rn_log.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=6)
+        sb = ttk.Scrollbar(holder, command=self.rn_log.yview,
+                           style="Sync.Vertical.TScrollbar")
+        sb.pack(side="right", fill="y", pady=6, padx=(0, 4))
+        self.rn_log.configure(yscrollcommand=sb.set)
+
+    # ---------------- 화면 전환 ----------------
+    def show_rename(self):
+        if self.compact:      # 컴팩트 상태면 먼저 펼친다
+            self.toggle_compact()
+        self._sync_geometry = self.root.geometry()
+        self.page_sync.pack_forget()
+        self.page_rename.pack(fill="both", expand=True)
+        self.root.update_idletasks()
+        w = min(self.root.winfo_reqwidth(), 820)
+        h = self.root.winfo_reqheight()
+        self.root.minsize(480, 420)
+        self.root.geometry(f"{max(w, 480)}x{h}")
+
+    def show_sync(self):
+        self.page_rename.pack_forget()
+        self.page_sync.pack(fill="both", expand=True, padx=16, pady=12)
+        self.root.minsize(520, 460)
+        if getattr(self, "_sync_geometry", None):
+            self.root.geometry(self._sync_geometry)
+
+    # ---------------- 이름 일괄 변경 동작 ----------------
+    def browse_rename_root(self):
+        p = filedialog.askdirectory(
+            title="이름을 바꿀 폴더가 들어있는 상위 폴더 선택",
+            initialdir=self.rn_root.get() or os.path.expanduser("~"))
+        if p:
+            self.rn_root.set(p)
+            save_config({**load_config(), "rename_root": p})
+
+    def _rn_clear(self):
+        self.rn_log.configure(state="normal")
+        self.rn_log.delete("1.0", "end")
+        self.rn_log.configure(state="disabled")
+
+    def _rn_write(self, msg):
+        self.rn_log.configure(state="normal")
+        self.rn_log.insert("end", msg + "\n")
+        self.rn_log.see("end")
+        self.rn_log.configure(state="disabled")
+
+    def _current_rename_plan(self):
+        """현재 화면 설정으로 (plan, 오류메시지) 를 만든다."""
+        root = self.rn_root.get().strip()
+        if not root or not os.path.isdir(root):
+            return None, "대상 루트 폴더를 올바르게 지정하세요."
+        want_dir = self.rn_target.get() == "dir"
+        op = self.rn_op.get()
+        if op == "set":
+            nm = self.rn_newname.get().strip()
+            if not nm:
+                return None, "새 이름을 입력하세요."
+            plan = build_rename_plan(root, want_dir, "set", new_name=nm)
+        else:
+            find = self.rn_find.get()
+            if not find.strip():
+                return None, "바꿀 단어를 입력하세요."
+            plan = build_rename_plan(root, want_dir, "replace",
+                                     find=find, replace=self.rn_replace.get())
+        return plan, None
+
+    def rename_preview(self):
+        self._rn_clear()
+        plan, err = self._current_rename_plan()
+        if err:
+            self._rn_write(err)
+            return
+        kind = "폴더" if self.rn_target.get() == "dir" else "파일"
+        if not plan:
+            self._rn_write(f"바뀌는 {kind}이(가) 없습니다.")
+            return
+        self._rn_write(f"[미리보기] 바뀔 {kind} {len(plan)}개")
+        for old, new in plan:
+            self._rn_write(f"  {old}   →   {new}")
+
+    def rename_apply(self):
+        self._rn_clear()
+        plan, err = self._current_rename_plan()
+        if err:
+            self._rn_write(err)
+            messagebox.showwarning("확인", err)
+            return
+        kind = "폴더" if self.rn_target.get() == "dir" else "파일"
+        if not plan:
+            self._rn_write(f"바뀌는 {kind}이(가) 없습니다.")
+            messagebox.showinfo("안내", f"바뀌는 {kind}이(가) 없습니다.")
+            return
+        sample = "\n".join(f"{o}  →  {n}" for o, n in plan[:10])
+        more = "" if len(plan) <= 10 else f"\n... 외 {len(plan) - 10}개"
+        if not messagebox.askyesno(
+                "일괄 변경 확인",
+                f"{kind} {len(plan)}개의 이름을 바꿀까요?\n\n{sample}{more}"):
+            return
+        root = self.rn_root.get().strip()
+        done, errors = apply_rename_plan(root, plan)
+        for old, new in plan:
+            self._rn_write(f"  {old}   →   {new}")
+        self._rn_write("")
+        self._rn_write(f"===== 완료: {done}개 변경 / 오류 {len(errors)}개 =====")
+        for old, new, e in errors:
+            self._rn_write(f"[오류] {old} → {new}: {e}")
 
     # ---------------- 폴더 선택 / 쌍 관리 ----------------
     def browse_src(self):
