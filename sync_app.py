@@ -100,41 +100,58 @@ def save_config(cfg):
         pass
 
 
-# 동기화에서 제외할 항목 (Google Drive for Desktop 임시 폴더/파일, OS 잔여물 등).
-# 이런 항목까지 복사하면 .tmp.driveupload 안의 숫자 임시 파일이 함께 복사된다.
+# 동기화에서 항상 제외할 OS 잔여물 파일(윈도/맥 시스템 파일, 오피스 임시 파일 등).
 EXCLUDE_FILE_NAMES = {"desktop.ini", "thumbs.db", ".ds_store"}
 EXCLUDE_FILE_PREFIXES = ("~$",)
 
 
-def _is_excluded_dir(name):
-    """Google Drive 임시 폴더(.tmp.driveupload/.tmp.drivedownload 등) 제외."""
-    return name.lower().startswith(".tmp.drive")
+def parse_exclude_words(text):
+    """콤마로 구분된 제외 단어 문자열을 소문자 단어 리스트로 변환한다."""
+    if not text:
+        return []
+    words = []
+    for chunk in str(text).replace("\n", ",").split(","):
+        w = chunk.strip().lower()
+        if w:
+            words.append(w)
+    return words
 
 
-def _is_excluded_file(name):
+def _is_excluded_dir(name, extra_words=()):
+    """사용자가 지정한 단어를 이름에 포함하는 폴더를 제외 대상으로 판단한다."""
     low = name.lower()
-    return low in EXCLUDE_FILE_NAMES or any(
-        low.startswith(p) for p in EXCLUDE_FILE_PREFIXES)
+    return any(w in low for w in extra_words)
 
 
-def list_relative_files(root):
-    """root 아래의 모든 파일을 root 기준 상대경로 set 으로 반환(임시/잔여물 제외)."""
+def _is_excluded_file(name, extra_words=()):
+    """제외 대상 파일인지 판단(OS 잔여물 + 사용자가 지정한 단어 포함 파일)."""
+    low = name.lower()
+    if low in EXCLUDE_FILE_NAMES or any(
+            low.startswith(p) for p in EXCLUDE_FILE_PREFIXES):
+        return True
+    return any(w in low for w in extra_words)
+
+
+def list_relative_files(root, exclude_dirs=(), exclude_files=()):
+    """root 아래의 모든 파일을 root 기준 상대경로 set 으로 반환(제외 항목 제외)."""
     result = set()
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if not _is_excluded_dir(d)]
+        dirnames[:] = [d for d in dirnames
+                       if not _is_excluded_dir(d, exclude_dirs)]
         for name in filenames:
-            if _is_excluded_file(name):
+            if _is_excluded_file(name, exclude_files):
                 continue
             full = os.path.join(dirpath, name)
             result.add(os.path.relpath(full, root))
     return result
 
 
-def list_relative_dirs(root):
-    """root 아래의 모든 하위 폴더를 root 기준 상대경로 set 으로 반환(임시 폴더 제외)."""
+def list_relative_dirs(root, exclude_dirs=(), exclude_files=()):
+    """root 아래의 모든 하위 폴더를 root 기준 상대경로 set 으로 반환(제외 폴더 제외)."""
     result = set()
     for dirpath, dirnames, _filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if not _is_excluded_dir(d)]
+        dirnames[:] = [d for d in dirnames
+                       if not _is_excluded_dir(d, exclude_dirs)]
         for name in dirnames:
             full = os.path.join(dirpath, name)
             result.add(os.path.relpath(full, root))
@@ -179,10 +196,14 @@ class SyncPlan:
     overwrite=False : 동일 파일명이 있으면 무조건 건너뛰기
     """
 
-    def __init__(self, src, dst, overwrite=True):
+    def __init__(self, src, dst, overwrite=True,
+                 exclude_dirs=(), exclude_files=()):
         self.src = src
         self.dst = dst
         self.overwrite = overwrite
+        # 이름에 포함되면 원본/대상 양쪽 모두 건너뛸 단어 목록
+        self.exclude_dirs = tuple(exclude_dirs)
+        self.exclude_files = tuple(exclude_files)
         self.to_copy = []        # 새로 추가된 파일
         self.to_update = []      # 변경되어 덮어쓸 파일
         self.to_skip = []        # 동일/건너뛸 파일
@@ -190,8 +211,11 @@ class SyncPlan:
         self.dirs_to_delete = []  # 대상에만 있어 삭제할 폴더
 
     def build(self):
-        src_files = list_relative_files(self.src)
-        dst_files = list_relative_files(self.dst) if os.path.isdir(self.dst) else set()
+        src_files = list_relative_files(
+            self.src, self.exclude_dirs, self.exclude_files)
+        dst_files = list_relative_files(
+            self.dst, self.exclude_dirs, self.exclude_files) \
+            if os.path.isdir(self.dst) else set()
 
         for rel in sorted(src_files):
             s = os.path.join(self.src, rel)
@@ -209,8 +233,11 @@ class SyncPlan:
         for rel in sorted(dst_files - src_files):
             self.to_delete.append(rel)
 
-        src_dirs = list_relative_dirs(self.src)
-        dst_dirs = list_relative_dirs(self.dst) if os.path.isdir(self.dst) else set()
+        src_dirs = list_relative_dirs(
+            self.src, self.exclude_dirs, self.exclude_files)
+        dst_dirs = list_relative_dirs(
+            self.dst, self.exclude_dirs, self.exclude_files) \
+            if os.path.isdir(self.dst) else set()
         self.dirs_to_delete = sorted(dst_dirs - src_dirs, reverse=True)
 
 
@@ -295,6 +322,9 @@ class App:
         self.confirm_delete_var = tk.BooleanVar(value=cfg.get("confirm_delete", True))
         # 동일 파일명 처리: "skip" = 무조건 건너뛰기, "diff" = 다르면 덮어쓰기
         self.conflict_mode = tk.StringVar(value=cfg.get("conflict_mode", "diff"))
+        # 이름에 이 단어를 포함하면 원본/대상 양쪽에서 건너뛴다(콤마로 구분).
+        self.exclude_dirs_var = tk.StringVar(value=cfg.get("exclude_dirs", ""))
+        self.exclude_files_var = tk.StringVar(value=cfg.get("exclude_files", ""))
         self.src_input = tk.StringVar()
         self.dst_input = tk.StringVar()
 
@@ -540,6 +570,34 @@ class App:
         self._check(c, "삭제 전 확인 (켜면 삭제 직전에 한 번 물어봅니다)",
                     self.confirm_delete_var).pack(anchor="w", padx=14, pady=(0, 9))
 
+        # 제외 카드 (특정 단어를 포함한 폴더명/파일명 건너뛰기)
+        c = self._card(main)
+        c.grid_columnconfigure(1, weight=1)
+        self._label(c, "동기화에서 제외할 이름 (원본·대상 모두 건너뜀)",
+                    font=self.font_b, fg=TEXT).grid(
+            row=0, column=0, columnspan=2, sticky="w", padx=14, pady=(10, 3))
+        self._label(c, "폴더 이름").grid(row=1, column=0, sticky="w",
+                                     padx=(14, 8), pady=4)
+        ex_dir_entry = self._entry(c, self.exclude_dirs_var)
+        ex_dir_entry.grid(row=1, column=1, sticky="ew", padx=(0, 14), pady=4)
+        Tooltip(ex_dir_entry,
+                "이 단어를 이름에 포함하는 폴더는 통째로 건너뜁니다.\n"
+                "콤마(,)로 여러 개 지정 (예: temp, 캐시, __pycache__)",
+                self.font_small)
+        self._label(c, "파일 이름").grid(row=2, column=0, sticky="w",
+                                     padx=(14, 8), pady=4)
+        ex_file_entry = self._entry(c, self.exclude_files_var)
+        ex_file_entry.grid(row=2, column=1, sticky="ew", padx=(0, 14), pady=4)
+        Tooltip(ex_file_entry,
+                "이 단어를 이름에 포함하는 파일은 건너뜁니다.\n"
+                "콤마(,)로 여러 개 지정 (예: .tmp, 사본, backup)",
+                self.font_small)
+        self._label(c, "콤마(,)로 여러 단어를 지정할 수 있습니다. 대소문자 구분 없음.",
+                    font=self.font_small, fg=MUTED).grid(
+            row=3, column=0, columnspan=2, sticky="w", padx=14, pady=(2, 10))
+        ex_dir_entry.bind("<FocusOut>", lambda _e: self._persist())
+        ex_file_entry.bind("<FocusOut>", lambda _e: self._persist())
+
         # 예약 카드
         c = self._card(main)
         self._check(c, "예약 실행 (프로그램이 켜져 있는 동안 자동 동기화)",
@@ -677,6 +735,8 @@ class App:
             "delete_enabled": self.delete_var.get(),
             "confirm_delete": self.confirm_delete_var.get(),
             "conflict_mode": self.conflict_mode.get(),
+            "exclude_dirs": self.exclude_dirs_var.get().strip(),
+            "exclude_files": self.exclude_files_var.get().strip(),
             "sched_enabled": self.sched_enabled.get(),
             "sched_mode": self.sched_mode.get(),
             "sched_time": self.sched_time.get().strip(),
@@ -787,17 +847,25 @@ class App:
         self.busy = True
         self._cancel.clear()
         overwrite = self.conflict_mode.get() == "diff"
+        exclude_dirs = parse_exclude_words(self.exclude_dirs_var.get())
+        exclude_files = parse_exclude_words(self.exclude_files_var.get())
         self.progress_var.set("")
         self.set_status("변경사항 분석 중...")
         self._set_buttons(False)
-        threading.Thread(target=self._preview_worker, args=(pairs, overwrite),
-                         daemon=True).start()
+        threading.Thread(
+            target=self._preview_worker,
+            args=(pairs, overwrite, exclude_dirs, exclude_files),
+            daemon=True).start()
 
-    def _preview_worker(self, pairs, overwrite):
+    def _preview_worker(self, pairs, overwrite, exclude_dirs, exclude_files):
         try:
+            if exclude_dirs:
+                self.log_msg(f"[제외] 폴더 이름 포함: {', '.join(exclude_dirs)}")
+            if exclude_files:
+                self.log_msg(f"[제외] 파일 이름 포함: {', '.join(exclude_files)}")
             tot_copy = tot_update = tot_skip = tot_delete = 0
             for src, dst in pairs:
-                plan = SyncPlan(src, dst, overwrite)
+                plan = SyncPlan(src, dst, overwrite, exclude_dirs, exclude_files)
                 plan.build()
                 tot_copy += len(plan.to_copy)
                 tot_update += len(plan.to_update)
@@ -840,16 +908,25 @@ class App:
         delete_enabled = self.delete_var.get()
         confirm_delete = self.confirm_delete_var.get()
         overwrite = self.conflict_mode.get() == "diff"
-        threading.Thread(target=self._sync_worker,
-                         args=(pairs, delete_enabled, confirm_delete, overwrite),
-                         daemon=True).start()
+        exclude_dirs = parse_exclude_words(self.exclude_dirs_var.get())
+        exclude_files = parse_exclude_words(self.exclude_files_var.get())
+        threading.Thread(
+            target=self._sync_worker,
+            args=(pairs, delete_enabled, confirm_delete, overwrite,
+                  exclude_dirs, exclude_files),
+            daemon=True).start()
 
-    def _sync_worker(self, pairs, delete_enabled, confirm_delete, overwrite):
+    def _sync_worker(self, pairs, delete_enabled, confirm_delete, overwrite,
+                     exclude_dirs, exclude_files):
         try:
+            if exclude_dirs:
+                self.log_msg(f"[제외] 폴더 이름 포함: {', '.join(exclude_dirs)}")
+            if exclude_files:
+                self.log_msg(f"[제외] 파일 이름 포함: {', '.join(exclude_files)}")
             plans = []
             for src, dst in pairs:
                 os.makedirs(dst, exist_ok=True)
-                plan = SyncPlan(src, dst, overwrite)
+                plan = SyncPlan(src, dst, overwrite, exclude_dirs, exclude_files)
                 plan.build()
                 plans.append(plan)
 
