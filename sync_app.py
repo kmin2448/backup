@@ -336,6 +336,8 @@ class App:
         self._last_daily_run_day = None
 
         self.busy = False
+        self.compact = False               # 최소화(컴팩트) 모드 여부
+        self._full_geometry = None         # 최소화 전 창 크기 기억
         self._cancel = threading.Event()   # 멈추기 요청
         self.log_queue = queue.Queue()
         self._ui_queue = queue.Queue()
@@ -500,21 +502,34 @@ class App:
     def _build_ui(self):
         main = ctk.CTkFrame(self.root, fg_color=BG, corner_radius=0)
         main.pack(fill="both", expand=True, padx=16, pady=12)
+        self._main = main
 
-        # 헤더: 제목 + 오른쪽 상태 칩 (시안 2a)
+        # 헤더: 제목 + 오른쪽 상태 칩 + 최소화 버튼
         head = ctk.CTkFrame(main, fg_color="transparent")
         head.pack(fill="x", pady=(0, 8))
-        tbox = ctk.CTkFrame(head, fg_color="transparent")
+        self._header = head
+        self.title_box = tbox = ctk.CTkFrame(head, fg_color="transparent")
         tbox.pack(side="left")
         self._label(tbox, "폴더 동기화", font=self.font_title, fg=TEAL).pack(anchor="w")
         self._label(tbox, "SSD → D드라이브", font=self.font_small,
                     fg=MUTED).pack(anchor="w")
-        ctk.CTkLabel(head, textvariable=self.status_var, font=self.font_small,
-                     text_color=TEXT, fg_color=INSET, corner_radius=13,
-                     height=26, padx=12).pack(side="right")
+        # 최소화/펼치기 토글 (누르면 진행률·로그·실행버튼만 남는 컴팩트 모드)
+        self.min_btn = self._button(
+            head, "▁  최소화", self.toggle_compact,
+            "설정을 접고 진행률·로그·실행 버튼만 작은 창으로 표시합니다", width=96)
+        self.min_btn.pack(side="right")
+        self.status_chip = ctk.CTkLabel(
+            head, textvariable=self.status_var, font=self.font_small,
+            text_color=TEXT, fg_color=INSET, corner_radius=13, height=26, padx=12)
+        self.status_chip.pack(side="right", padx=(0, 8))
+
+        # 설정 영역(컴팩트 모드에서 통째로 숨김) — 아래 카드들을 담는 컨테이너
+        self.full_frame = ctk.CTkFrame(main, fg_color="transparent")
+        self.full_frame.pack(fill="x")
+        full = self.full_frame
 
         # 폴더 선택 카드
-        c = self._card(main)
+        c = self._card(full)
         c.grid_columnconfigure(1, weight=1)
         self._label(c, "원본 폴더").grid(row=0, column=0, sticky="w",
                                       padx=(14, 8), pady=(11, 5))
@@ -534,7 +549,7 @@ class App:
                                         padx=14, pady=(5, 11))
 
         # 폴더 목록 카드
-        c = self._card(main)
+        c = self._card(full)
         head = ctk.CTkFrame(c, fg_color="transparent")
         head.pack(fill="x", padx=14, pady=(10, 3))
         ctk.CTkLabel(head, textvariable=self.count_var, font=self.font_small,
@@ -560,7 +575,7 @@ class App:
                      "동기화 목록을 모두 비웁니다", width=104).pack(side="left", padx=(8, 0))
 
         # 옵션 카드
-        c = self._card(main)
+        c = self._card(full)
         self._label(c, "같은 이름의 파일이 대상에 있을 때",
                     font=self.font_b, fg=TEXT).pack(anchor="w", padx=14, pady=(10, 3))
         self._mode_segment(c).pack(fill="x", padx=14, pady=(2, 8))
@@ -571,7 +586,7 @@ class App:
                     self.confirm_delete_var).pack(anchor="w", padx=14, pady=(0, 9))
 
         # 제외 카드 (특정 단어를 포함한 폴더명/파일명 건너뛰기)
-        c = self._card(main)
+        c = self._card(full)
         c.grid_columnconfigure(1, weight=1)
         self._label(c, "동기화에서 제외할 이름 (원본·대상 모두 건너뜀)",
                     font=self.font_b, fg=TEXT).grid(
@@ -599,7 +614,7 @@ class App:
         ex_file_entry.bind("<FocusOut>", lambda _e: self._persist())
 
         # 예약 카드
-        c = self._card(main)
+        c = self._card(full)
         self._check(c, "예약 실행 (프로그램이 켜져 있는 동안 자동 동기화)",
                     self.sched_enabled).grid(row=0, column=0, columnspan=6,
                                              sticky="w", padx=14, pady=(10, 4))
@@ -613,8 +628,8 @@ class App:
                      text_color=MUTED).grid(row=2, column=0, columnspan=6, sticky="w",
                                             padx=14, pady=(4, 9))
 
-        # 진행 카드: 원형 다이얼 + 퍼센트/남은 시간 (시안 2a)
-        c = self._card(main)
+        # 진행 카드: 원형 다이얼 + 퍼센트/남은 시간 (항상 표시)
+        c = self.card_progress = self._card(main)
         pf = ctk.CTkFrame(c, fg_color="transparent")
         pf.pack(fill="x", padx=14, pady=10)
         self.dial = tk.Canvas(pf, width=64, height=64, bg=CARD,
@@ -655,6 +670,34 @@ class App:
             "목록의 모든 폴더를 동기화합니다 (추가·변경 복사, 삭제 반영)",
             primary=True)
         self.sync_btn.pack(side="left", padx=(10, 8), fill="x", expand=True)
+
+    # ---------------- 최소화(컴팩트) 모드 ----------------
+    def toggle_compact(self):
+        """설정 카드들을 접거나 펼쳐 작은 창/큰 창을 전환한다."""
+        self.compact = not self.compact
+        if self.compact:
+            # 현재(큰) 창 크기를 기억해 두었다가 펼칠 때 복원
+            self._full_geometry = self.root.geometry()
+            self.full_frame.pack_forget()
+            self.title_box.pack_forget()
+            self.min_btn.configure(text="▢  펼치기")
+            self._resize_compact()
+        else:
+            # 설정 영역을 진행 카드 앞에 다시 끼워 넣는다
+            self.full_frame.pack(fill="x", before=self.card_progress)
+            self.title_box.pack(side="left")
+            self.min_btn.configure(text="▁  최소화")
+            self.root.minsize(520, 460)
+            if self._full_geometry:
+                self.root.geometry(self._full_geometry)
+
+    def _resize_compact(self):
+        """컴팩트 모드에서 내용 높이에 맞춰 창을 작게 줄인다."""
+        self.root.update_idletasks()
+        h = self.root.winfo_reqheight()
+        w = 460
+        self.root.minsize(380, h)
+        self.root.geometry(f"{w}x{h}")
 
     # ---------------- 폴더 선택 / 쌍 관리 ----------------
     def browse_src(self):
@@ -1072,18 +1115,53 @@ class App:
             return f"{seconds // 60}분 {seconds % 60}초"
         return f"{seconds // 3600}시간 {(seconds % 3600) // 60}분"
 
-    # ---------------- 원형 진행률 다이얼 (시안 2a) ----------------
+    # ---------------- 원형 진행률 다이얼 ----------------
+    DIAL_SIZE = 64
+
+    def _render_dial_image(self, frac):
+        """PIL 로 4배 슈퍼샘플링해 매끄러운(안티앨리어싱) 링 이미지를 만든다.
+
+        tkinter Canvas 의 arc 는 계단현상이 심해 진행률 원이 깨져 보이므로,
+        Pillow(=customtkinter 의존성)로 큰 이미지를 그린 뒤 축소해 또렷하게 만든다.
+        실패하면 None 을 돌려주고 호출부가 기존 Canvas 방식으로 대체한다.
+        """
+        try:
+            from PIL import Image, ImageDraw, ImageTk
+        except Exception:
+            return None
+        size = self.DIAL_SIZE
+        scale = 4
+        S = size * scale
+        img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+        dr = ImageDraw.Draw(img)
+        pad = 7 * scale
+        ring = 6 * scale
+        box = [pad, pad, S - 1 - pad, S - 1 - pad]
+        dr.arc(box, 0, 360, fill=SHADOW, width=ring)          # 배경 링
+        if frac > 0:
+            # 12시 방향(-90°)에서 시계방향으로 진행
+            dr.arc(box, -90, -90 + frac * 360, fill=TEAL, width=ring)
+        img = img.resize((size, size), Image.LANCZOS)
+        return ImageTk.PhotoImage(img)
+
     def _set_dial(self, frac):
+        frac = max(0.0, min(1.0, frac))
+        size = self.DIAL_SIZE
         d = self.dial
         d.delete("all")
-        # 배경 링
-        d.create_oval(6, 6, 58, 58, outline=SHADOW, width=4)
-        if frac > 0:
-            extent = -359.9 if frac >= 1.0 else -frac * 360
-            d.create_arc(6, 6, 58, 58, start=90, extent=extent,
-                         style="arc", outline=TEAL, width=5)
-        d.create_text(32, 32, text=f"{int(frac * 100)}%", fill=TEAL,
-                      font=(FONT_FAMILY, 11, "bold"))
+        photo = self._render_dial_image(frac)
+        if photo is not None:
+            self._dial_photo = photo   # GC 방지용 참조 유지
+            d.create_image(size // 2, size // 2, image=photo)
+        else:
+            # 폴백: Pillow 가 없을 때 기존 Canvas arc 방식
+            d.create_oval(7, 7, size - 7, size - 7, outline=SHADOW, width=5)
+            if frac > 0:
+                extent = -359.9 if frac >= 1.0 else -frac * 360
+                d.create_arc(7, 7, size - 7, size - 7, start=90, extent=extent,
+                             style="arc", outline=TEAL, width=5)
+        d.create_text(size // 2, size // 2, text=f"{int(frac * 100)}%",
+                      fill=TEAL, font=(FONT_FAMILY, 11, "bold"))
 
     def _set_progress_max(self, total):
         self._total = max(total, 1)
