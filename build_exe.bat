@@ -17,8 +17,8 @@ if "%PYEXE%"=="" (
     exit /b 1
 )
 
-echo [1/2] PyInstaller / customtkinter 설치 확인 / 설치 중...
-%PYEXE% -m pip install --upgrade pyinstaller customtkinter
+echo [1/2] PyInstaller / customtkinter / pyzipper 설치 확인 / 설치 중...
+%PYEXE% -m pip install --upgrade pyinstaller customtkinter pyzipper
 if errorlevel 1 (
     echo [오류] 라이브러리 설치에 실패했습니다.
     pause

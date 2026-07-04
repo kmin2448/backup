@@ -24,6 +24,13 @@ if errorlevel 1 (
     %PYEXE% -m pip install customtkinter
 )
 
+REM 파일 잠금 기능에 필요한 pyzipper 가 없으면 설치
+%PYEXE% -c "import pyzipper" >nul 2>nul
+if errorlevel 1 (
+    echo pyzipper 설치 중...
+    %PYEXE% -m pip install pyzipper
+)
+
 %PYEXE% sync_app.py
 
 :end

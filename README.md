@@ -1,8 +1,9 @@
 # 폴더 동기화 프로그램
 
 버튼 하나로 **여러 폴더 쌍**을 한꺼번에 동기화하는 데스크톱 프로그램입니다.
-Python 표준 라이브러리(tkinter)만 사용하므로 추가 설치 없이 동작하고, 원하면 단일
-`.exe` 파일로 빌드할 수도 있습니다.
+화면 구성에는 `customtkinter`, 파일 잠금(암호 ZIP)에는 `pyzipper` 를 사용하며, 실행용
+배치 파일이 필요한 라이브러리를 자동으로 설치합니다. 원하면 단일 `.exe` 파일로 빌드할
+수도 있습니다.
 
 ## 동작 방식
 
@@ -19,17 +20,17 @@ Python 표준 라이브러리(tkinter)만 사용하므로 추가 설치 없이 �
 
 ### 방법 A. Python 으로 바로 실행
 1. https://www.python.org/downloads/ 에서 Python 설치 (설치 시 **"Add Python to PATH"** 체크)
-2. `동기화_실행.bat` 더블클릭 (필요한 `customtkinter` 를 자동 설치 후 실행)
-   - 수동으로는 `pip install customtkinter` 후 `python sync_app.py`
+2. `동기화_실행.bat` 더블클릭 (필요한 `customtkinter`·`pyzipper` 를 자동 설치 후 실행)
+   - 수동으로는 `pip install customtkinter pyzipper` 후 `python sync_app.py`
 
 ### 방법 B. 단일 .exe 로 만들어서 실행 (Python 없이 배포 가능)
-1. `build_exe.bat` 더블클릭 → PyInstaller·customtkinter가 자동 설치되고 빌드됩니다.
+1. `build_exe.bat` 더블클릭 → PyInstaller·customtkinter·pyzipper가 자동 설치되고 빌드됩니다.
 2. 완료되면 `dist\폴더동기화.exe` 가 생성됩니다. 이 파일만 있으면
    Python이 없는 PC에서도 더블클릭으로 실행됩니다.
 
    직접 명령으로 빌드하려면:
    ```
-   pip install pyinstaller customtkinter
+   pip install pyinstaller customtkinter pyzipper
    pyinstaller --onefile --windowed --name "폴더동기화" --collect-all customtkinter sync_app.py
    ```
    - `--onefile` : 하나의 exe로 묶기
@@ -91,22 +92,28 @@ Python 표준 라이브러리(tkinter)만 사용하므로 추가 설치 없이 �
 ### 특정 단어가 든 파일 일괄 잠금
 
 이름에 특정 단어가 든 파일을 **비밀번호로 한 번에 잠급니다**. 잠긴 파일은 이름 뒤에
-`.locked` 가 붙고 **내용이 암호화**되어 그대로는 열거나 실행할 수 없습니다. 위쪽의
-**대상 루트 폴더**·**재귀** 설정을 그대로 사용합니다.
+`.locked.zip` 이 붙는 **AES-256 암호 ZIP** 이 되어, 내용이 실제로 암호화되므로 그대로는
+열거나 실행할 수 없습니다. 위쪽의 **대상 루트 폴더**·**재귀** 설정을 그대로 사용합니다.
+
+> **다른 사람에게 전달해도 됩니다.** 표준 암호 ZIP 이므로 이 프로그램이 없어도, 받는 사람은
+> **비밀번호만 알면** 흔한 압축 프로그램으로 풀 수 있습니다 — Windows 11 탐색기(설치 불필요),
+> 무료 **7-Zip**(Windows), **Keka**(macOS) 등. (단, AES 를 지원하는 최신 도구가 필요합니다.
+> 아주 오래된 기본 압축기는 AES 암호 ZIP 을 못 풀 수 있습니다.)
 
 1. **잠글 단어** 를 입력하고 **일괄 잠금** 을 누릅니다. 대상 파일 목록을 확인한 뒤
    비밀번호를 입력하면(처음에는 새 비밀번호를 두 번 입력해 설정) 해당 파일이 모두 잠깁니다.
    비밀번호는 저장하지 않고 확인용 검증값만 남기므로, **잊어버리면 되돌릴 수 없습니다.**
 2. **전체 잠금 ON/OFF** — 작업 중 매번 비밀번호를 넣는 번거로움을 줄이기 위한 스위치입니다.
-   - **잠금 ON**: 파일이 잠긴(암호화) 상태. **열 때마다 비밀번호가 필요**합니다
-     (임시로 복호화한 사본을 열며 원본 잠금은 유지).
+   - **잠금 ON**: 파일이 잠긴(암호 ZIP) 상태. **열 때마다 비밀번호가 필요**합니다
+     (임시로 풀어낸 사본을 열며 원본 잠금은 유지).
    - **잠금 OFF**: 파일이 풀린 상태. **비밀번호 없이 바로** 열 수 있습니다.
    - **잠금을 OFF 로 바꾸려면 비밀번호가 필요**합니다(끄는 것 자체가 파일을 푸는 일이므로).
 3. **잠금 관리 중인 파일** 목록에서 파일별로 🔒/🔓 상태를 보고 **열기** / **관리 해제**
    할 수 있습니다. **관리 해제** 는 파일을 풀어서 원래대로 돌려놓고 목록에서 뺍니다.
 
 잠금 설정(관리 목록·ON/OFF·비밀번호 검증값)은 `사용자홈\.folder_sync_config.json` 에
-기억됩니다.
+기억됩니다. 실제 파일 암호화에는 표준 암호 ZIP 라이브러리 **pyzipper** 를 사용합니다
+(`pip install pyzipper` — `build_exe.bat` 로 빌드하면 자동 포함).
 
 ## 예약 실행
 

@@ -9,8 +9,10 @@
   - 변경되었거나 새로 추가된 파일은 복사/덮어쓰기
   - 원본에서 삭제된 파일은 대상에서도 삭제 (삭제 전 사용자에게 확인)
   - 예약 실행(반복/매일), 진행률, 로그, 마우스오버 툴팁
+  - 이름 일괄 변경 및 특정 단어가 든 파일의 일괄 잠금(AES-256 암호 ZIP)
 
-표준 라이브러리(tkinter)만 사용하므로 별도 설치 없이 동작합니다.
+화면 구성에는 customtkinter, 파일 잠금에는 pyzipper 를 사용합니다
+(실행용 배치 파일이 자동으로 설치). 나머지는 표준 라이브러리(tkinter)로 동작합니다.
 화면이 흐리게 보이지 않도록 Windows 고해상도(High-DPI)에 대응합니다.
 """
 
@@ -432,136 +434,122 @@ def apply_rename_plan(root, changes):
 
 
 # ===================== 파일 일괄 잠금 =====================
-# 특정 단어가 이름에 든 파일을 비밀번호로 잠근다(암호화).
-#   - 잠긴 파일은 원래 이름 뒤에 ".locked" 가 붙고 내용이 암호화되어
-#     그대로는 열거나 실행할 수 없다.
-#   - 전체 "잠금 ON"  : 관리 대상 파일이 모두 잠긴(암호화) 상태
-#   - 전체 "잠금 OFF" : 관리 대상 파일이 모두 풀린(복호화) 상태 → 비번 없이 열기 가능
-# 표준 라이브러리(hashlib, os)만 사용한다. 비밀번호 자체는 저장하지 않고,
-# 확인용 검증값(verifier)과 소금값(salt)만 설정 파일에 남긴다.
+# 특정 단어가 이름에 든 파일을 비밀번호로 잠근다.
+#   - 잠긴 파일은 원래 이름 뒤에 ".locked.zip" 이 붙은 'AES-256 암호 ZIP' 이 된다.
+#     내용이 실제로 암호화되므로 그대로는 열거나 실행할 수 없다.
+#   - 이 프로그램이 없어도, 받는 사람은 암호만 알면 표준 압축 프로그램
+#     (Windows 11 탐색기 · 무료 7-Zip · macOS Keka 등)으로 풀 수 있다.
+#   - 전체 "잠금 ON"  : 관리 대상 파일이 모두 잠긴(암호 ZIP) 상태
+#   - 전체 "잠금 OFF" : 관리 대상 파일이 모두 풀린 상태 → 비번 없이 열기 가능
+#
+# 실제 파일 암호화는 표준 암호 ZIP(pyzipper) 이 담당한다. 비밀번호 자체는 저장하지
+# 않고, 앱에서 '올바른 비밀번호인지' 빠르게 확인하기 위한 검증값(verifier)과
+# 소금값(salt)만 설정 파일에 남긴다(파일 암호화 키와는 별개).
 
-LOCK_EXT = ".locked"
-LOCK_MAGIC = b"FLOCK1\0"
+try:
+    import pyzipper
+except ImportError:      # 라이브러리가 없으면 잠금 기능만 비활성화된다
+    pyzipper = None
+
+LOCK_SUFFIX = ".locked.zip"
 LOCK_ITERS = 200000
 
 
-def lock_derive_key(password, salt):
-    """비밀번호 + salt 에서 32바이트 키를 만든다(PBKDF2-HMAC-SHA256)."""
-    return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, LOCK_ITERS)
-
-
 def lock_make_verifier(password):
-    """새 비밀번호에 대한 (salt_hex, verifier_hex, key) 를 만든다."""
+    """새 비밀번호에 대한 (salt_hex, verifier_hex) 를 만든다(앱 내부 확인용)."""
     salt = os.urandom(16)
-    key = lock_derive_key(password, salt)
+    key = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, LOCK_ITERS)
     verifier = hashlib.sha256(key + b"verify").hexdigest()
-    return salt.hex(), verifier, key
+    return salt.hex(), verifier
 
 
 def lock_check_password(password, salt_hex, verifier_hex):
-    """비밀번호가 맞으면 key(bytes) 를, 틀리면 None 을 돌려준다."""
+    """비밀번호가 설정된 잠금 비밀번호와 같으면 True."""
+    if not password or not salt_hex or not verifier_hex:
+        return False
     try:
         salt = bytes.fromhex(salt_hex)
     except (ValueError, TypeError):
-        return None
-    key = lock_derive_key(password, salt)
-    if hashlib.sha256(key + b"verify").hexdigest() == verifier_hex:
-        return key
-    return None
+        return False
+    key = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, LOCK_ITERS)
+    return hashlib.sha256(key + b"verify").hexdigest() == verifier_hex
 
 
-def lock_key_matches_verifier(key, verifier_hex):
-    """이미 가지고 있는 key 가 현재 검증값과 맞는지 확인한다."""
-    return bool(key) and bool(verifier_hex) and \
-        hashlib.sha256(key + b"verify").hexdigest() == verifier_hex
+def lock_encrypt_file(path, password):
+    """path 를 AES-256 암호 ZIP(path + LOCK_SUFFIX) 으로 만들고 원본을 지운다.
 
-
-def _lock_keystream(key, nonce, length):
-    """key + nonce + 카운터 를 SHA-256 으로 이어붙여 keystream 을 만든다."""
-    out = bytearray()
-    counter = 0
-    while len(out) < length:
-        out.extend(hashlib.sha256(key + nonce + counter.to_bytes(8, "big")).digest())
-        counter += 1
-    return bytes(out[:length])
-
-
-def _lock_xor(data, key, nonce):
-    if not data:
-        return b""
-    ks = _lock_keystream(key, nonce, len(data))
-    n = int.from_bytes(data, "big") ^ int.from_bytes(ks, "big")
-    return n.to_bytes(len(data), "big")
-
-
-def lock_encrypt_file(path, key):
-    """path 를 암호화하여 path + LOCK_EXT 로 만들고 원본을 지운다. 잠긴 경로 반환."""
-    locked = path + LOCK_EXT
-    with open(path, "rb") as f:
-        data = f.read()
-    name = os.path.basename(path).encode("utf-8")
-    nonce = os.urandom(16)
-    cipher = _lock_xor(data, key, nonce)
+    잠긴 경로를 돌려준다. 압축 파일 안에는 원래 파일 하나만 원래 이름으로 담긴다.
+    """
+    if pyzipper is None:
+        raise RuntimeError("pyzipper 가 설치되어 있지 않습니다.")
+    locked = path + LOCK_SUFFIX
+    name = os.path.basename(path)
     tmp = locked + ".tmp"
-    with open(tmp, "wb") as f:
-        f.write(LOCK_MAGIC)
-        f.write(len(name).to_bytes(2, "big"))
-        f.write(name)
-        f.write(nonce)
-        f.write(cipher)
+    try:
+        with pyzipper.AESZipFile(tmp, "w", compression=pyzipper.ZIP_DEFLATED,
+                                 encryption=pyzipper.WZ_AES) as zf:
+            zf.setpassword(password.encode("utf-8"))
+            zf.write(path, arcname=name)     # 디스크에서 스트리밍으로 담는다
+    except Exception:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
     os.replace(tmp, locked)     # 잠금 파일을 안전하게 만든 뒤에
     os.remove(path)             # 원본을 지운다
     return locked
 
 
-def _lock_read(locked_path, key):
-    """잠금 파일을 읽어 (원래이름, 복호화된 내용) 을 돌려준다."""
-    with open(locked_path, "rb") as f:
-        blob = f.read()
-    if blob[:len(LOCK_MAGIC)] != LOCK_MAGIC:
-        raise ValueError("잠금 파일 형식이 아닙니다.")
-    i = len(LOCK_MAGIC)
-    name_len = int.from_bytes(blob[i:i + 2], "big"); i += 2
-    name = blob[i:i + name_len].decode("utf-8"); i += name_len
-    nonce = blob[i:i + 16]; i += 16
-    data = _lock_xor(blob[i:], key, nonce)
-    return name, data
+def _lock_extract_single(locked_path, password, out_dir):
+    """암호 ZIP 에서 파일 하나를 out_dir 로 풀고 (원래이름, 푼경로) 를 돌려준다."""
+    if pyzipper is None:
+        raise RuntimeError("pyzipper 가 설치되어 있지 않습니다.")
+    with pyzipper.AESZipFile(locked_path) as zf:
+        zf.setpassword(password.encode("utf-8"))
+        names = zf.namelist()
+        if not names:
+            raise ValueError("잠금 파일이 비어 있습니다.")
+        name = os.path.basename(names[0]) or names[0]
+        with zf.open(names[0]) as src:      # 비밀번호가 틀리면 여기서 예외
+            dst_path = os.path.join(out_dir, name)
+            with open(dst_path, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+    return name, dst_path
 
 
-def lock_decrypt_file(locked_path, key):
-    """locked_path 를 복호화해 원래 파일로 되돌리고 .locked 를 지운다. 원본 경로 반환."""
-    name, data = _lock_read(locked_path, key)
-    original = os.path.join(os.path.dirname(locked_path), name)
-    tmp = original + ".tmp_unlock"
-    with open(tmp, "wb") as f:
-        f.write(data)
-    os.replace(tmp, original)
+def lock_decrypt_file(locked_path, password):
+    """locked_path 를 풀어 원래 파일로 되돌리고 잠금 파일을 지운다. 원본 경로 반환."""
+    d = os.path.dirname(locked_path)
+    # 같은 폴더 안 임시 폴더에 풀어 두었다가 제자리로 옮긴다(다른 드라이브 이동 방지).
+    td = tempfile.mkdtemp(prefix=".unlock_", dir=d or None)
+    try:
+        name, tmp_path = _lock_extract_single(locked_path, password, td)
+        original = os.path.join(d, name)
+        os.replace(tmp_path, original)
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
     os.remove(locked_path)
     return original
 
 
-def lock_decrypt_to_temp(locked_path, key):
-    """복호화한 내용을 임시 파일에 쓰고 그 경로를 돌려준다(원본 .locked 는 그대로).
+def lock_decrypt_to_temp(locked_path, password):
+    """푼 내용을 임시 폴더에 쓰고 그 경로를 돌려준다(원본 잠금 파일은 그대로).
 
     잠금이 켜진(ON) 상태에서 파일을 '실행'만 할 때 쓴다. 원본 잠금은 유지된다.
     """
-    name, data = _lock_read(locked_path, key)
-    d = tempfile.mkdtemp(prefix="unlock_")
-    out = os.path.join(d, name)
-    with open(out, "wb") as f:
-        f.write(data)
-    return out
+    td = tempfile.mkdtemp(prefix="unlock_")
+    _name, tmp_path = _lock_extract_single(locked_path, password, td)
+    return tmp_path
 
 
 def find_files_with_word(root, word, recursive=False):
-    """root 아래에서 이름에 word 가 든 파일 경로 목록을 만든다(.locked 는 제외)."""
+    """root 아래에서 이름에 word 가 든 파일 경로 목록을 만든다(잠금 파일은 제외)."""
     out = []
     if not word:
         return out
     if recursive:
         for dp, _dn, fns in os.walk(root):
             for fn in sorted(fns):
-                if word in fn and not fn.endswith(LOCK_EXT):
+                if word in fn and not fn.endswith(LOCK_SUFFIX):
                     out.append(os.path.join(dp, fn))
     else:
         try:
@@ -570,7 +558,7 @@ def find_files_with_word(root, word, recursive=False):
             return out
         for fn in names:
             p = os.path.join(root, fn)
-            if word in fn and not fn.endswith(LOCK_EXT) and os.path.isfile(p):
+            if word in fn and not fn.endswith(LOCK_SUFFIX) and os.path.isfile(p):
                 out.append(p)
     return out
 
@@ -695,7 +683,7 @@ class App:
 
         # 파일 일괄 잠금 상태
         self.lk_word = tk.StringVar()                   # 잠글 파일 이름에 든 단어
-        self._lock_key = None                           # 이번 실행 동안 기억하는 키
+        self._lock_pw = None                            # 이번 실행 동안 기억하는 비밀번호
         self._lk_rows = None                            # 잠금 목록이 들어가는 프레임
 
         self._setup_fonts()
@@ -1178,7 +1166,8 @@ class App:
         self._label(body, "특정 단어가 든 파일 일괄 잠금",
                     font=self.font_b, fg=TEAL).pack(anchor="w", pady=(12, 2))
         self._label(body, "위에서 고른 '대상 루트 폴더'와 '재귀' 설정을 그대로 사용합니다. "
-                          "잠근 파일은 이름 뒤에 .locked 가 붙고 내용이 암호화됩니다.",
+                          "잠근 파일은 이름 뒤에 .locked.zip 이 붙는 암호 ZIP 이 되어, "
+                          "이 프로그램 없이도 암호만 알면 7-Zip 등으로 풀 수 있습니다.",
                     font=self.font_small, fg=MUTED).pack(anchor="w", pady=(0, 4))
 
         # 잠글 단어 + 실행
@@ -1408,8 +1397,19 @@ class App:
         self.root.wait_window(win)
         return result["pw"]
 
-    def _lock_key_new_or_verify(self):
-        """일괄 잠금용 키를 얻는다. 비번이 없으면 새로 설정하고, 있으면 확인한다."""
+    def _require_pyzipper(self):
+        """잠금 기능에 필요한 pyzipper 가 있는지 확인한다."""
+        if pyzipper is None:
+            messagebox.showwarning(
+                "안내",
+                "파일 잠금 기능을 쓰려면 'pyzipper' 라이브러리가 필요합니다.\n"
+                "명령창에서 다음을 실행한 뒤 다시 시작하세요.\n\n"
+                "    pip install pyzipper")
+            return False
+        return True
+
+    def _lock_pw_new_or_verify(self):
+        """일괄 잠금용 비밀번호를 얻는다. 비번이 없으면 새로 설정하고, 있으면 확인한다."""
         st = self._lock_state()
         if st["verifier"]:
             pw = self._password_modal(
@@ -1417,63 +1417,62 @@ class App:
                 note="이미 설정된 잠금 비밀번호를 입력하세요.")
             if pw is None:
                 return None
-            key = lock_check_password(pw, st["salt"], st["verifier"])
-            if key is None:
+            if not lock_check_password(pw, st["salt"], st["verifier"]):
                 messagebox.showwarning("확인", "비밀번호가 올바르지 않습니다.")
                 return None
-            self._lock_key = key
-            return key
+            self._lock_pw = pw
+            return pw
         # 처음 잠그는 경우: 새 비밀번호 설정
         pw = self._password_modal(
             "새 잠금 비밀번호 설정", confirm=True,
-            note="이 비밀번호로 파일을 잠급니다. 잊어버리면 되돌릴 수 없으니 주의하세요.")
+            note="이 비밀번호로 파일을 잠급니다. 받는 사람도 이 비밀번호로 풉니다.\n"
+                 "잊어버리면 되돌릴 수 없으니 주의하세요.")
         if pw is None:
             return None
-        salt_hex, verifier, key = lock_make_verifier(pw)
+        salt_hex, verifier = lock_make_verifier(pw)
         self._lock_save(salt=salt_hex, verifier=verifier)
-        self._lock_key = key
-        return key
+        self._lock_pw = pw
+        return pw
 
-    def _lock_key_verify(self, note="비밀번호를 입력하세요."):
-        """잠금 비밀번호를 확인해 key 를 얻는다(설정된 비번이 없으면 None)."""
+    def _lock_pw_verify(self, note="비밀번호를 입력하세요."):
+        """잠금 비밀번호를 확인해 비밀번호 문자열을 얻는다(설정된 비번이 없으면 None)."""
         st = self._lock_state()
         if not st["verifier"]:
             return None
         pw = self._password_modal("잠금 비밀번호 입력", note=note)
         if pw is None:
             return None
-        key = lock_check_password(pw, st["salt"], st["verifier"])
-        if key is None:
+        if not lock_check_password(pw, st["salt"], st["verifier"]):
             messagebox.showwarning("확인", "비밀번호가 올바르지 않습니다.")
             return None
-        self._lock_key = key
-        return key
+        self._lock_pw = pw
+        return pw
 
-    def _lock_encrypt_all(self, key, files):
+    def _lock_encrypt_all(self, pw, files):
         """아직 잠기지 않은 관리 파일들을 모두 잠근다."""
         done, errors = 0, []
         for p in files:
-            if os.path.exists(p + LOCK_EXT):
+            if os.path.exists(p + LOCK_SUFFIX):
                 continue                    # 이미 잠김
             if not os.path.exists(p):
                 errors.append((p, "파일을 찾을 수 없습니다."))
                 continue
             try:
-                lock_encrypt_file(p, key)
+                lock_encrypt_file(p, pw)
                 done += 1
             except Exception as e:          # noqa: BLE001
                 errors.append((p, str(e)))
         return done, errors
 
-    def _lock_decrypt_all(self, key, files):
+    def _lock_decrypt_all(self, pw, files):
         """잠겨 있는 관리 파일들을 모두 푼다."""
         done, errors = 0, []
         for p in files:
-            locked = p + LOCK_EXT
+            locked = p + LOCK_SUFFIX
             if not os.path.exists(locked):
                 continue                    # 이미 풀림
             try:
-                lock_decrypt_file(locked, key)
+                lock_decrypt_file(locked, pw)
                 done += 1
             except Exception as e:          # noqa: BLE001
                 errors.append((p, str(e)))
@@ -1481,6 +1480,8 @@ class App:
 
     def lock_bulk(self):
         """이름에 특정 단어가 든 파일을 찾아 비밀번호로 일괄 잠근다."""
+        if not self._require_pyzipper():
+            return
         root = self.rn_root.get().strip()
         if not root or not os.path.isdir(root):
             messagebox.showwarning("확인", "대상 루트 폴더를 올바르게 지정하세요.")
@@ -1503,12 +1504,12 @@ class App:
                 "일괄 잠금 확인",
                 f"'{word}' 이(가) 든 파일 {len(found)}개를 잠글까요?\n\n{sample}{more}"):
             return
-        key = self._lock_key_new_or_verify()
-        if key is None:
+        pw = self._lock_pw_new_or_verify()
+        if pw is None:
             return
         files = st["files"] + found
         # 관리 목록 전체가 '잠김(ON)' 상태가 되도록 아직 안 잠긴 것도 모두 잠근다
-        done, errors = self._lock_encrypt_all(key, files)
+        done, errors = self._lock_encrypt_all(pw, files)
         self._lock_save(files=files, on=True)
         self._lock_refresh()
         if errors:
@@ -1517,10 +1518,14 @@ class App:
             messagebox.showwarning(
                 "일부 오류", f"{done}개를 잠갔습니다. 오류 {len(errors)}개\n{detail}")
         else:
-            messagebox.showinfo("완료", f"파일 {done}개를 잠갔습니다.")
+            messagebox.showinfo(
+                "완료", f"파일 {done}개를 잠갔습니다.\n"
+                        "잠긴 파일 이름 뒤에는 .locked.zip 이 붙습니다.")
 
     def lock_toggle(self):
         """전체 잠금 ON/OFF 를 전환한다. OFF 로 바꿀 때는 반드시 비밀번호를 확인한다."""
+        if not self._require_pyzipper():
+            return
         st = self._lock_state()
         if not st["files"]:
             messagebox.showinfo(
@@ -1528,23 +1533,23 @@ class App:
             return
         if st["on"]:
             # 잠금 ON -> OFF : 반드시 비밀번호 확인
-            key = self._lock_key_verify(
+            pw = self._lock_pw_verify(
                 note="잠금을 끄면(OFF) 비밀번호 없이 파일을 열 수 있습니다.\n"
                      "끄려면 비밀번호를 입력하세요.")
-            if key is None:
+            if pw is None:
                 return
-            done, errors = self._lock_decrypt_all(key, st["files"])
+            done, errors = self._lock_decrypt_all(pw, st["files"])
             self._lock_save(on=False)
             summary = f"잠금 OFF: 파일 {done}개를 열었습니다."
         else:
-            # 잠금 OFF -> ON : 이번 실행에서 확인한 키가 있으면 그대로 사용
-            key = self._lock_key
-            if not lock_key_matches_verifier(key, st["verifier"]):
-                key = self._lock_key_verify(
+            # 잠금 OFF -> ON : 이번 실행에서 확인한 비번이 있으면 그대로 사용
+            pw = self._lock_pw
+            if not lock_check_password(pw, st["salt"], st["verifier"]):
+                pw = self._lock_pw_verify(
                     note="잠금을 켜려면(ON) 비밀번호를 입력하세요.")
-                if key is None:
+                if pw is None:
                     return
-            done, errors = self._lock_encrypt_all(key, st["files"])
+            done, errors = self._lock_encrypt_all(pw, st["files"])
             self._lock_save(on=True)
             summary = f"잠금 ON: 파일 {done}개를 잠갔습니다."
         self._lock_refresh()
@@ -1576,11 +1581,13 @@ class App:
                   (원본 잠금은 그대로 유지).
         """
         st = self._lock_state()
-        locked = path + LOCK_EXT
+        locked = path + LOCK_SUFFIX
         if st["on"]:
-            key = self._lock_key_verify(
+            if not self._require_pyzipper():
+                return
+            pw = self._lock_pw_verify(
                 note="이 파일을 열려면 비밀번호를 입력하세요.")
-            if key is None:
+            if pw is None:
                 return
             if not os.path.exists(locked):
                 # 이미 풀려 있으면 그냥 연다(상태 불일치 방어)
@@ -1590,7 +1597,7 @@ class App:
                     messagebox.showwarning("오류", "파일을 찾을 수 없습니다.")
                 return
             try:
-                tmp = lock_decrypt_to_temp(locked, key)
+                tmp = lock_decrypt_to_temp(locked, pw)
             except Exception as e:          # noqa: BLE001
                 messagebox.showwarning("오류", f"파일을 여는 중 오류: {e}")
                 return
@@ -1608,15 +1615,17 @@ class App:
     def lock_unmanage(self, path):
         """파일을 잠금 관리에서 뺀다. 잠겨 있으면 풀고 목록에서 제거한다."""
         st = self._lock_state()
-        locked = path + LOCK_EXT
+        locked = path + LOCK_SUFFIX
         if os.path.exists(locked):
+            if not self._require_pyzipper():
+                return
             # 잠긴 상태라면 풀어서 원래 파일로 돌려놓아야 하므로 비밀번호 확인
-            key = self._lock_key_verify(
+            pw = self._lock_pw_verify(
                 note="관리에서 빼려면 파일을 먼저 풀어야 합니다. 비밀번호를 입력하세요.")
-            if key is None:
+            if pw is None:
                 return
             try:
-                lock_decrypt_file(locked, key)
+                lock_decrypt_file(locked, pw)
             except Exception as e:          # noqa: BLE001
                 messagebox.showwarning("오류", f"파일을 푸는 중 오류: {e}")
                 return
@@ -1626,7 +1635,7 @@ class App:
             self._lock_save(files=files)
         else:
             self._lock_save(files=[], on=False, salt="", verifier="")
-            self._lock_key = None
+            self._lock_pw = None
         self._lock_refresh()
 
     def _lock_refresh(self):
@@ -1653,7 +1662,7 @@ class App:
                 anchor="w", padx=6, pady=8)
             return
         for path in st["files"]:
-            locked = os.path.exists(path + LOCK_EXT)
+            locked = os.path.exists(path + LOCK_SUFFIX)
             row = ctk.CTkFrame(self._lk_rows, fg_color="transparent")
             row.pack(fill="x", padx=4, pady=2)
             mark = "🔒" if locked else "🔓"
