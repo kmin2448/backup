@@ -531,12 +531,74 @@ def lock_decrypt_file(locked_path, password):
     return original
 
 
-def lock_decrypt_to_temp(locked_path, password):
+def lock_encrypt_folder(path, password):
+    """폴더 path 를 통째로 AES-256 암호 ZIP(path + LOCK_SUFFIX) 으로 만들고 원본 폴더 삭제.
+
+    압축 파일 안에는 폴더 이름을 최상위로 하여 하위 파일들이 담기므로,
+    받는 사람이 풀면 원래 폴더가 그대로 복원된다. 잠긴 경로를 돌려준다.
+    """
+    if pyzipper is None:
+        raise RuntimeError("pyzipper 가 설치되어 있지 않습니다.")
+    path = path.rstrip(os.sep)
+    locked = path + LOCK_SUFFIX
+    parent = os.path.dirname(path)
+    tmp = locked + ".tmp"
+    try:
+        with pyzipper.AESZipFile(tmp, "w", compression=pyzipper.ZIP_DEFLATED,
+                                 encryption=pyzipper.WZ_AES) as zf:
+            zf.setpassword(password.encode("utf-8"))
+            for dp, dns, fns in os.walk(path):
+                rel = os.path.relpath(dp, parent).replace(os.sep, "/")
+                for fn in sorted(fns):
+                    zf.write(os.path.join(dp, fn), arcname=f"{rel}/{fn}")
+                if not fns and not dns:      # 빈 폴더도 보존
+                    zf.writestr(rel + "/", b"")
+    except Exception:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
+    os.replace(tmp, locked)     # 잠금 파일을 안전하게 만든 뒤에
+    shutil.rmtree(path)         # 원본 폴더를 지운다
+    return locked
+
+
+def lock_decrypt_folder(locked_path, password):
+    """폴더 잠금 ZIP 을 풀어 원래 폴더를 복원하고 잠금 파일을 지운다. 복원된 폴더 경로 반환."""
+    if pyzipper is None:
+        raise RuntimeError("pyzipper 가 설치되어 있지 않습니다.")
+    parent = os.path.dirname(locked_path)
+    base = os.path.basename(locked_path)[:-len(LOCK_SUFFIX)]
+    target = os.path.join(parent, base)
+    # 같은 위치의 임시 폴더에 풀어 두었다가 폴더째로 제자리에 옮긴다.
+    td = tempfile.mkdtemp(prefix=".unlock_", dir=parent or None)
+    try:
+        with pyzipper.AESZipFile(locked_path) as zf:
+            zf.setpassword(password.encode("utf-8"))
+            zf.extractall(td)        # 비밀번호가 틀리면 여기서 예외
+        src = os.path.join(td, base)
+        if not os.path.exists(src):  # 방어: 최상위 폴더가 없으면 임시폴더 자체를 사용
+            src = td
+        os.replace(src, target)
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+    os.remove(locked_path)
+    return target
+
+
+def lock_decrypt_to_temp(locked_path, password, is_dir=False):
     """푼 내용을 임시 폴더에 쓰고 그 경로를 돌려준다(원본 잠금 파일은 그대로).
 
-    잠금이 켜진(ON) 상태에서 파일을 '실행'만 할 때 쓴다. 원본 잠금은 유지된다.
+    잠금이 켜진(ON) 상태에서 파일/폴더를 '열기'만 할 때 쓴다. 원본 잠금은 유지된다.
+    폴더면 통째로 임시 폴더에 풀어 그 폴더 경로를, 파일이면 그 파일 경로를 돌려준다.
     """
     td = tempfile.mkdtemp(prefix="unlock_")
+    if is_dir:
+        base = os.path.basename(locked_path)[:-len(LOCK_SUFFIX)]
+        with pyzipper.AESZipFile(locked_path) as zf:
+            zf.setpassword(password.encode("utf-8"))
+            zf.extractall(td)
+        cand = os.path.join(td, base)
+        return cand if os.path.exists(cand) else td
     _name, tmp_path = _lock_extract_single(locked_path, password, td)
     return tmp_path
 
@@ -561,6 +623,37 @@ def find_files_with_word(root, word, recursive=False):
             if word in fn and not fn.endswith(LOCK_SUFFIX) and os.path.isfile(p):
                 out.append(p)
     return out
+
+
+def find_folders_with_word(root, word, recursive=False):
+    """root 아래에서 이름에 word 가 든 폴더 경로 목록을 만든다.
+
+    재귀 시 서로 겹치는(부모-자식) 폴더는 바깥쪽만 남긴다. 바깥 폴더를 통째로
+    잠그면 그 안의 폴더도 함께 담기기 때문이다.
+    """
+    out = []
+    if not word:
+        return out
+    if recursive:
+        for dp, dns, _fn in os.walk(root):
+            for dn in sorted(dns):
+                if word in dn:
+                    out.append(os.path.join(dp, dn))
+    else:
+        try:
+            names = sorted(os.listdir(root))
+        except OSError:
+            return out
+        for dn in names:
+            p = os.path.join(root, dn)
+            if word in dn and os.path.isdir(p):
+                out.append(p)
+    # 겹치는 하위 폴더 제거(바깥쪽 우선)
+    kept = []
+    for p in sorted(out, key=len):
+        if not any((p + os.sep).startswith(k + os.sep) for k in kept):
+            kept.append(p)
+    return kept
 
 
 class Tooltip:
@@ -681,8 +774,9 @@ class App:
         self.rn_replace = tk.StringVar()
         self.rn_recursive = tk.BooleanVar(value=False)  # 하위 폴더까지 포함
 
-        # 파일 일괄 잠금 상태
-        self.lk_word = tk.StringVar()                   # 잠글 파일 이름에 든 단어
+        # 파일/폴더 일괄 잠금 상태
+        self.lk_word = tk.StringVar()                   # 잠글 이름에 든 단어
+        self.lk_target = tk.StringVar(value="file")     # file=파일 / dir=폴더
         self._lock_pw = None                            # 이번 실행 동안 기억하는 비밀번호
         self._lk_rows = None                            # 잠금 목록이 들어가는 프레임
 
@@ -1160,26 +1254,32 @@ class App:
         # ----- 파일 일괄 잠금 -----
         self._build_lock_ui(body)
 
-    # ---------------- 파일 일괄 잠금 화면 ----------------
+    # ---------------- 파일/폴더 일괄 잠금 화면 ----------------
     def _build_lock_ui(self, body):
         # 구역 제목
-        self._label(body, "특정 단어가 든 파일 일괄 잠금",
+        self._label(body, "특정 단어가 든 파일·폴더 일괄 잠금",
                     font=self.font_b, fg=TEAL).pack(anchor="w", pady=(12, 2))
         self._label(body, "위에서 고른 '대상 루트 폴더'와 '재귀' 설정을 그대로 사용합니다. "
-                          "잠근 파일은 이름 뒤에 .locked.zip 이 붙는 AES 암호 ZIP 이 되어, "
+                          "잠근 것은 이름 뒤에 .locked.zip 이 붙는 AES 암호 ZIP 이 되어, "
                           "이 프로그램 없이도 무료 7-Zip·Keka 등으로 암호만 알면 풀 수 있습니다.",
                     font=self.font_small, fg=MUTED).pack(anchor="w", pady=(0, 4))
 
-        # 잠글 단어 + 실행
+        # 대상 종류(파일/폴더) + 잠글 단어 + 실행
         c = self._card(body)
         c.grid_columnconfigure(1, weight=1)
-        self._label(c, "잠글 단어").grid(row=0, column=0, sticky="w",
-                                       padx=(14, 8), pady=11)
-        self._entry(c, self.lk_word).grid(row=0, column=1, sticky="ew", pady=11)
+        trow = ctk.CTkFrame(c, fg_color="transparent")
+        trow.grid(row=0, column=0, columnspan=3, sticky="w", padx=14, pady=(11, 2))
+        self._label(trow, "무엇을 잠글까요?").pack(side="left", padx=(0, 12))
+        self._pradio(trow, "파일", self.lk_target, "file").pack(side="left")
+        self._pradio(trow, "폴더(통째로)", self.lk_target, "dir").pack(
+            side="left", padx=(18, 0))
+        self._label(c, "잠글 단어").grid(row=1, column=0, sticky="w",
+                                       padx=(14, 8), pady=(4, 11))
+        self._entry(c, self.lk_word).grid(row=1, column=1, sticky="ew", pady=(4, 11))
         self._button(c, "일괄 잠금", self.lock_bulk,
-                     "이름에 이 단어가 든 파일을 비밀번호로 한 번에 잠급니다",
-                     primary=True, width=110).grid(row=0, column=2,
-                                                   padx=(8, 14), pady=11)
+                     "이름에 이 단어가 든 파일 또는 폴더를 비밀번호로 한 번에 잠급니다",
+                     primary=True, width=110).grid(row=1, column=2,
+                                                   padx=(8, 14), pady=(4, 11))
 
         # 전체 잠금 ON/OFF 상태
         c = self._card(body)
@@ -1325,12 +1425,23 @@ class App:
         for old, new, e in errors:
             self._rn_write(f"[오류] {old} → {new}: {e}")
 
-    # ---------------- 파일 일괄 잠금 동작 ----------------
+    # ---------------- 파일/폴더 일괄 잠금 동작 ----------------
     def _lock_state(self):
-        """설정 파일에서 잠금 상태를 읽어온다."""
+        """설정 파일에서 잠금 상태를 읽어온다.
+
+        files 는 [{"path": 경로, "dir": 폴더여부}, …] 로 정규화한다.
+        (옛 형식인 문자열 항목은 파일로 취급.)
+        """
         cfg = load_config()
+        files = []
+        for it in cfg.get("lock_files", []):
+            if isinstance(it, dict):
+                files.append({"path": it.get("path", ""),
+                              "dir": bool(it.get("dir", False))})
+            else:                       # 옛 형식: 문자열 = 파일 경로
+                files.append({"path": it, "dir": False})
         return {
-            "files": cfg.get("lock_files", []),
+            "files": files,
             "salt": cfg.get("lock_salt", ""),
             "verifier": cfg.get("lock_verifier", ""),
             "on": bool(cfg.get("lock_on", False)),
@@ -1463,37 +1574,48 @@ class App:
         return pw
 
     def _lock_encrypt_all(self, pw, files):
-        """아직 잠기지 않은 관리 파일들을 모두 잠근다."""
+        """아직 잠기지 않은 관리 항목(파일·폴더)을 모두 잠근다."""
         done, errors = 0, []
-        for p in files:
-            if os.path.exists(p + LOCK_SUFFIX):
+        for e in files:
+            path, is_dir = e["path"], e["dir"]
+            if os.path.exists(path + LOCK_SUFFIX):
                 continue                    # 이미 잠김
-            if not os.path.exists(p):
-                errors.append((p, "파일을 찾을 수 없습니다."))
-                continue
             try:
-                lock_encrypt_file(p, pw)
+                if is_dir:
+                    if not os.path.isdir(path):
+                        errors.append((path, "폴더를 찾을 수 없습니다."))
+                        continue
+                    lock_encrypt_folder(path, pw)
+                else:
+                    if not os.path.isfile(path):
+                        errors.append((path, "파일을 찾을 수 없습니다."))
+                        continue
+                    lock_encrypt_file(path, pw)
                 done += 1
-            except Exception as e:          # noqa: BLE001
-                errors.append((p, str(e)))
+            except Exception as ex:         # noqa: BLE001
+                errors.append((path, str(ex)))
         return done, errors
 
     def _lock_decrypt_all(self, pw, files):
-        """잠겨 있는 관리 파일들을 모두 푼다."""
+        """잠겨 있는 관리 항목(파일·폴더)을 모두 푼다."""
         done, errors = 0, []
-        for p in files:
-            locked = p + LOCK_SUFFIX
+        for e in files:
+            path, is_dir = e["path"], e["dir"]
+            locked = path + LOCK_SUFFIX
             if not os.path.exists(locked):
                 continue                    # 이미 풀림
             try:
-                lock_decrypt_file(locked, pw)
+                if is_dir:
+                    lock_decrypt_folder(locked, pw)
+                else:
+                    lock_decrypt_file(locked, pw)
                 done += 1
-            except Exception as e:          # noqa: BLE001
-                errors.append((p, str(e)))
+            except Exception as ex:         # noqa: BLE001
+                errors.append((path, str(ex)))
         return done, errors
 
     def lock_bulk(self):
-        """이름에 특정 단어가 든 파일을 찾아 비밀번호로 일괄 잠근다."""
+        """이름에 특정 단어가 든 파일 또는 폴더를 찾아 비밀번호로 일괄 잠근다."""
         if not self._require_pyzipper():
             return
         root = self.rn_root.get().strip()
@@ -1501,22 +1623,28 @@ class App:
             messagebox.showwarning("확인", "대상 루트 폴더를 올바르게 지정하세요.")
             return
         word = self.lk_word.get().strip()
+        is_dir = self.lk_target.get() == "dir"
+        kind = "폴더" if is_dir else "파일"
         if not word:
-            messagebox.showwarning("확인", "잠글 파일 이름에 포함된 단어를 입력하세요.")
+            messagebox.showwarning("확인", f"잠글 {kind} 이름에 포함된 단어를 입력하세요.")
             return
         st = self._lock_state()
-        already = set(st["files"])
-        found = [p for p in find_files_with_word(root, word, self.rn_recursive.get())
-                 if p not in already]
+        already = {e["path"] for e in st["files"]}
+        recursive = self.rn_recursive.get()
+        if is_dir:
+            cand = find_folders_with_word(root, word, recursive)
+        else:
+            cand = find_files_with_word(root, word, recursive)
+        found = [{"path": p, "dir": is_dir} for p in cand if p not in already]
         if not found:
             messagebox.showinfo(
-                "안내", f"'{word}' 이(가) 이름에 든 새 파일을 찾지 못했습니다.")
+                "안내", f"'{word}' 이(가) 이름에 든 새 {kind}을(를) 찾지 못했습니다.")
             return
-        sample = "\n".join(os.path.basename(p) for p in found[:10])
+        sample = "\n".join(os.path.basename(e["path"]) for e in found[:10])
         more = "" if len(found) <= 10 else f"\n... 외 {len(found) - 10}개"
         if not messagebox.askyesno(
                 "일괄 잠금 확인",
-                f"'{word}' 이(가) 든 파일 {len(found)}개를 잠글까요?\n\n{sample}{more}"):
+                f"'{word}' 이(가) 든 {kind} {len(found)}개를 잠글까요?\n\n{sample}{more}"):
             return
         pw = self._lock_pw_new_or_verify()
         if pw is None:
@@ -1533,8 +1661,8 @@ class App:
                 "일부 오류", f"{done}개를 잠갔습니다. 오류 {len(errors)}개\n{detail}")
         else:
             messagebox.showinfo(
-                "완료", f"파일 {done}개를 잠갔습니다.\n"
-                        "잠긴 파일 이름 뒤에는 .locked.zip 이 붙습니다.")
+                "완료", f"{kind} {done}개를 잠갔습니다.\n"
+                        "잠긴 이름 뒤에는 .locked.zip 이 붙습니다.")
 
     def lock_toggle(self):
         """전체 잠금 ON/OFF 를 전환한다. OFF 로 바꿀 때는 반드시 비밀번호를 확인한다."""
@@ -1543,18 +1671,18 @@ class App:
         st = self._lock_state()
         if not st["files"]:
             messagebox.showinfo(
-                "안내", "잠금 관리 중인 파일이 없습니다. 먼저 '일괄 잠금'을 하세요.")
+                "안내", "잠금 관리 중인 항목이 없습니다. 먼저 '일괄 잠금'을 하세요.")
             return
         if st["on"]:
             # 잠금 ON -> OFF : 반드시 비밀번호 확인
             pw = self._lock_pw_verify(
-                note="잠금을 끄면(OFF) 비밀번호 없이 파일을 열 수 있습니다.\n"
+                note="잠금을 끄면(OFF) 비밀번호 없이 열 수 있습니다.\n"
                      "끄려면 비밀번호를 입력하세요.")
             if pw is None:
                 return
             done, errors = self._lock_decrypt_all(pw, st["files"])
             self._lock_save(on=False)
-            summary = f"잠금 OFF: 파일 {done}개를 열었습니다."
+            summary = f"잠금 OFF: {done}개를 열었습니다."
         else:
             # 잠금 OFF -> ON : 이번 실행에서 확인한 비번이 있으면 그대로 사용
             pw = self._lock_pw
@@ -1565,7 +1693,7 @@ class App:
                     return
             done, errors = self._lock_encrypt_all(pw, st["files"])
             self._lock_save(on=True)
-            summary = f"잠금 ON: 파일 {done}개를 잠갔습니다."
+            summary = f"잠금 ON: {done}개를 잠갔습니다."
         self._lock_refresh()
         if errors:
             messagebox.showwarning(
@@ -1587,20 +1715,21 @@ class App:
         except Exception as e:              # noqa: BLE001
             messagebox.showwarning("오류", f"파일을 열 수 없습니다: {e}")
 
-    def lock_open(self, path):
-        """관리 파일을 연다.
+    def lock_open(self, path, is_dir=False):
+        """관리 항목(파일·폴더)을 연다.
 
         잠금 OFF: 비밀번호 없이 바로 연다.
         잠금 ON : 비밀번호를 확인한 뒤, 임시로 복호화한 사본을 열어 실행한다
-                  (원본 잠금은 그대로 유지).
+                  (원본 잠금은 그대로 유지). 폴더면 통째로 풀어 그 폴더를 연다.
         """
         st = self._lock_state()
         locked = path + LOCK_SUFFIX
+        kind = "폴더" if is_dir else "파일"
         if st["on"]:
             if not self._require_pyzipper():
                 return
             pw = self._lock_pw_verify(
-                note="이 파일을 열려면 비밀번호를 입력하세요.")
+                note=f"이 {kind}을(를) 열려면 비밀번호를 입력하세요.")
             if pw is None:
                 return
             if not os.path.exists(locked):
@@ -1608,12 +1737,12 @@ class App:
                 if os.path.exists(path):
                     self._os_open(path)
                 else:
-                    messagebox.showwarning("오류", "파일을 찾을 수 없습니다.")
+                    messagebox.showwarning("오류", f"{kind}을(를) 찾을 수 없습니다.")
                 return
             try:
-                tmp = lock_decrypt_to_temp(locked, pw)
+                tmp = lock_decrypt_to_temp(locked, pw, is_dir=is_dir)
             except Exception as e:          # noqa: BLE001
-                messagebox.showwarning("오류", f"파일을 여는 중 오류: {e}")
+                messagebox.showwarning("오류", f"{kind}을(를) 여는 중 오류: {e}")
                 return
             self._os_open(tmp)
         else:
@@ -1622,28 +1751,34 @@ class App:
                 self._os_open(path)
             elif os.path.exists(locked):
                 messagebox.showinfo(
-                    "안내", "이 파일은 아직 잠겨 있습니다. 잠금을 켠 뒤 비밀번호로 여세요.")
+                    "안내", f"이 {kind}은(는) 아직 잠겨 있습니다. "
+                            "잠금을 켠 뒤 비밀번호로 여세요.")
             else:
-                messagebox.showwarning("오류", "파일을 찾을 수 없습니다.")
+                messagebox.showwarning("오류", f"{kind}을(를) 찾을 수 없습니다.")
 
-    def lock_unmanage(self, path):
-        """파일을 잠금 관리에서 뺀다. 잠겨 있으면 풀고 목록에서 제거한다."""
+    def lock_unmanage(self, path, is_dir=False):
+        """항목을 잠금 관리에서 뺀다. 잠겨 있으면 풀고 목록에서 제거한다."""
         st = self._lock_state()
         locked = path + LOCK_SUFFIX
+        kind = "폴더" if is_dir else "파일"
         if os.path.exists(locked):
             if not self._require_pyzipper():
                 return
-            # 잠긴 상태라면 풀어서 원래 파일로 돌려놓아야 하므로 비밀번호 확인
+            # 잠긴 상태라면 풀어서 원래대로 돌려놓아야 하므로 비밀번호 확인
             pw = self._lock_pw_verify(
-                note="관리에서 빼려면 파일을 먼저 풀어야 합니다. 비밀번호를 입력하세요.")
+                note=f"관리에서 빼려면 {kind}을(를) 먼저 풀어야 합니다. "
+                     "비밀번호를 입력하세요.")
             if pw is None:
                 return
             try:
-                lock_decrypt_file(locked, pw)
+                if is_dir:
+                    lock_decrypt_folder(locked, pw)
+                else:
+                    lock_decrypt_file(locked, pw)
             except Exception as e:          # noqa: BLE001
-                messagebox.showwarning("오류", f"파일을 푸는 중 오류: {e}")
+                messagebox.showwarning("오류", f"{kind}을(를) 푸는 중 오류: {e}")
                 return
-        files = [p for p in st["files"] if p != path]
+        files = [e for e in st["files"] if e["path"] != path]
         # 남은 관리 파일이 없으면 잠금 설정(비번 포함)을 깨끗이 지운다
         if files:
             self._lock_save(files=files)
@@ -1727,22 +1862,26 @@ class App:
         for w in self._lk_rows.winfo_children():
             w.destroy()
         if not st["files"]:
-            self._label(self._lk_rows, "잠금 관리 중인 파일이 없습니다.",
+            self._label(self._lk_rows, "잠금 관리 중인 항목이 없습니다.",
                         font=self.font_small, fg=MUTED).pack(
                 anchor="w", padx=6, pady=8)
             return
-        for path in st["files"]:
+        for e in st["files"]:
+            path, is_dir = e["path"], e["dir"]
             locked = os.path.exists(path + LOCK_SUFFIX)
             row = ctk.CTkFrame(self._lk_rows, fg_color="transparent")
             row.pack(fill="x", padx=4, pady=2)
             mark = "🔒" if locked else "🔓"
-            self._label(row, f"{mark}  {os.path.basename(path)}",
+            kindmark = "📁" if is_dir else "📄"
+            self._label(row, f"{mark} {kindmark}  {os.path.basename(path)}",
                         font=self.font_n, fg=TEXT).pack(side="left")
-            self._button(row, "관리 해제", lambda p=path: self.lock_unmanage(p),
-                         "이 파일을 잠금 관리에서 뺍니다(잠겨 있으면 풀어서 되돌립니다)",
+            self._button(row, "관리 해제",
+                         lambda p=path, dd=is_dir: self.lock_unmanage(p, dd),
+                         "이 항목을 잠금 관리에서 뺍니다(잠겨 있으면 풀어서 되돌립니다)",
                          width=84).pack(side="right", padx=(6, 4))
-            self._button(row, "열기", lambda p=path: self.lock_open(p),
-                         "파일을 엽니다(잠금 ON 이면 비밀번호가 필요합니다)",
+            self._button(row, "열기",
+                         lambda p=path, dd=is_dir: self.lock_open(p, dd),
+                         "엽니다(잠금 ON 이면 비밀번호가 필요합니다)",
                          width=64).pack(side="right")
 
     # ---------------- 폴더 선택 / 쌍 관리 ----------------
