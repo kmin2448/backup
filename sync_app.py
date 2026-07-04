@@ -1197,6 +1197,20 @@ class App:
                     font=self.font_small, fg=MUTED).grid(
             row=1, column=0, columnspan=2, sticky="w", padx=14, pady=(0, 11))
 
+        # 받는 사람용 '여는 방법' 안내 파일 만들기
+        c = self._card(body)
+        c.grid_columnconfigure(0, weight=1)
+        self._label(c, "전달받은 사람이 잠긴 파일을 여는 방법을 적은 안내 파일을 "
+                       "바탕화면에 만듭니다.", font=self.font_n, fg=TEXT).grid(
+            row=0, column=0, sticky="w", padx=14, pady=(11, 2))
+        self._button(c, "안내 파일 만들기", self.make_open_guide,
+                     "'잠긴 파일 여는 방법.txt' 를 바탕화면에 만듭니다. 파일을 전달할 때 "
+                     "함께 보내면 받는 사람이 헤매지 않습니다", primary=True,
+                     width=140).grid(row=0, column=1, padx=(8, 14), pady=(11, 2))
+        self._label(c, "비밀번호는 보안을 위해 안내 파일에 적지 않습니다(직접 알려주세요).",
+                    font=self.font_small, fg=MUTED).grid(
+            row=1, column=0, columnspan=2, sticky="w", padx=14, pady=(0, 11))
+
         # 잠금 관리 중인 파일 목록
         c = self._card(body, pady=(0, 0))
         self._label(c, "잠금 관리 중인 파일", font=self.font_b, fg=TEXT).pack(
@@ -1637,6 +1651,62 @@ class App:
             self._lock_save(files=[], on=False, salt="", verifier="")
             self._lock_pw = None
         self._lock_refresh()
+
+    def _desktop_dir(self):
+        """바탕화면 폴더 경로를 찾는다(없으면 홈 폴더)."""
+        home = os.path.expanduser("~")
+        candidates = [
+            os.path.join(home, "Desktop"),
+            os.path.join(home, "OneDrive", "Desktop"),
+            os.path.join(home, "OneDrive", "바탕 화면"),
+            os.path.join(home, "바탕 화면"),
+            os.path.join(home, "바탕화면"),
+        ]
+        for c in candidates:
+            if os.path.isdir(c):
+                return c
+        return home
+
+    def make_open_guide(self):
+        """받는 사람용 '잠긴 파일 여는 방법' 안내 파일을 바탕화면에 만든다."""
+        text = (
+            "[잠긴 파일 여는 방법]\n"
+            "\n"
+            "전달받은 파일 이름이 \"○○○.locked.zip\" 으로 끝난다면,\n"
+            "이 파일은 비밀번호로 잠겨 있는 암호 ZIP 파일입니다.\n"
+            "아래 순서대로 하면 원래 파일을 꺼낼 수 있습니다.\n"
+            "\n"
+            "● Windows\n"
+            "  1. 무료 압축 프로그램 7-Zip 을 설치합니다.\n"
+            "       https://www.7-zip.org\n"
+            "       (WinRAR 등 'AES 암호 ZIP' 을 지원하는 프로그램도 가능)\n"
+            "  2. 잠긴 파일(.locked.zip)을 마우스 오른쪽 버튼으로 클릭합니다.\n"
+            "  3. [7-Zip] → [압축 풀기] 또는 [열기] 를 선택합니다.\n"
+            "  4. 비밀번호를 입력하면 원래 파일이 나옵니다.\n"
+            "\n"
+            "● Mac\n"
+            "  1. 무료 압축 프로그램 Keka 를 설치합니다. (https://www.keka.io)\n"
+            "  2. 잠긴 파일을 Keka 로 엽니다.\n"
+            "  3. 비밀번호를 입력하면 원래 파일이 나옵니다.\n"
+            "\n"
+            "※ Windows·Mac 의 '기본 압축 기능'으로는 열리지 않을 수 있습니다.\n"
+            "   위 프로그램을 한 번만 설치하면 됩니다(설치 후에는 계속 사용).\n"
+            "※ 비밀번호는 파일을 보낸 사람에게 직접 물어보세요.\n"
+            "   (보안을 위해 이 안내 파일에는 비밀번호를 적지 않습니다.)\n"
+        )
+        d = self._desktop_dir()
+        path = os.path.join(d, "잠긴 파일 여는 방법.txt")
+        try:
+            # Windows 메모장에서도 한글이 깨지지 않도록 BOM 포함 UTF-8 로 저장
+            with open(path, "w", encoding="utf-8-sig") as f:
+                f.write(text)
+        except Exception as e:          # noqa: BLE001
+            messagebox.showwarning("오류", f"안내 파일을 만들지 못했습니다: {e}")
+            return
+        if messagebox.askyesno(
+                "완료",
+                f"바탕화면에 안내 파일을 만들었습니다.\n\n{path}\n\n지금 열어볼까요?"):
+            self._os_open(path)
 
     def _lock_refresh(self):
         """잠금 상태 라벨과 파일 목록을 현재 설정에 맞게 다시 그린다."""
