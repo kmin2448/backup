@@ -21,6 +21,8 @@ import shutil
 import threading
 import queue
 import json
+import hashlib
+import tempfile
 from datetime import datetime
 
 import tkinter as tk
@@ -429,6 +431,150 @@ def apply_rename_plan(root, changes):
     return done, errors
 
 
+# ===================== 파일 일괄 잠금 =====================
+# 특정 단어가 이름에 든 파일을 비밀번호로 잠근다(암호화).
+#   - 잠긴 파일은 원래 이름 뒤에 ".locked" 가 붙고 내용이 암호화되어
+#     그대로는 열거나 실행할 수 없다.
+#   - 전체 "잠금 ON"  : 관리 대상 파일이 모두 잠긴(암호화) 상태
+#   - 전체 "잠금 OFF" : 관리 대상 파일이 모두 풀린(복호화) 상태 → 비번 없이 열기 가능
+# 표준 라이브러리(hashlib, os)만 사용한다. 비밀번호 자체는 저장하지 않고,
+# 확인용 검증값(verifier)과 소금값(salt)만 설정 파일에 남긴다.
+
+LOCK_EXT = ".locked"
+LOCK_MAGIC = b"FLOCK1\0"
+LOCK_ITERS = 200000
+
+
+def lock_derive_key(password, salt):
+    """비밀번호 + salt 에서 32바이트 키를 만든다(PBKDF2-HMAC-SHA256)."""
+    return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, LOCK_ITERS)
+
+
+def lock_make_verifier(password):
+    """새 비밀번호에 대한 (salt_hex, verifier_hex, key) 를 만든다."""
+    salt = os.urandom(16)
+    key = lock_derive_key(password, salt)
+    verifier = hashlib.sha256(key + b"verify").hexdigest()
+    return salt.hex(), verifier, key
+
+
+def lock_check_password(password, salt_hex, verifier_hex):
+    """비밀번호가 맞으면 key(bytes) 를, 틀리면 None 을 돌려준다."""
+    try:
+        salt = bytes.fromhex(salt_hex)
+    except (ValueError, TypeError):
+        return None
+    key = lock_derive_key(password, salt)
+    if hashlib.sha256(key + b"verify").hexdigest() == verifier_hex:
+        return key
+    return None
+
+
+def lock_key_matches_verifier(key, verifier_hex):
+    """이미 가지고 있는 key 가 현재 검증값과 맞는지 확인한다."""
+    return bool(key) and bool(verifier_hex) and \
+        hashlib.sha256(key + b"verify").hexdigest() == verifier_hex
+
+
+def _lock_keystream(key, nonce, length):
+    """key + nonce + 카운터 를 SHA-256 으로 이어붙여 keystream 을 만든다."""
+    out = bytearray()
+    counter = 0
+    while len(out) < length:
+        out.extend(hashlib.sha256(key + nonce + counter.to_bytes(8, "big")).digest())
+        counter += 1
+    return bytes(out[:length])
+
+
+def _lock_xor(data, key, nonce):
+    if not data:
+        return b""
+    ks = _lock_keystream(key, nonce, len(data))
+    n = int.from_bytes(data, "big") ^ int.from_bytes(ks, "big")
+    return n.to_bytes(len(data), "big")
+
+
+def lock_encrypt_file(path, key):
+    """path 를 암호화하여 path + LOCK_EXT 로 만들고 원본을 지운다. 잠긴 경로 반환."""
+    locked = path + LOCK_EXT
+    with open(path, "rb") as f:
+        data = f.read()
+    name = os.path.basename(path).encode("utf-8")
+    nonce = os.urandom(16)
+    cipher = _lock_xor(data, key, nonce)
+    tmp = locked + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write(LOCK_MAGIC)
+        f.write(len(name).to_bytes(2, "big"))
+        f.write(name)
+        f.write(nonce)
+        f.write(cipher)
+    os.replace(tmp, locked)     # 잠금 파일을 안전하게 만든 뒤에
+    os.remove(path)             # 원본을 지운다
+    return locked
+
+
+def _lock_read(locked_path, key):
+    """잠금 파일을 읽어 (원래이름, 복호화된 내용) 을 돌려준다."""
+    with open(locked_path, "rb") as f:
+        blob = f.read()
+    if blob[:len(LOCK_MAGIC)] != LOCK_MAGIC:
+        raise ValueError("잠금 파일 형식이 아닙니다.")
+    i = len(LOCK_MAGIC)
+    name_len = int.from_bytes(blob[i:i + 2], "big"); i += 2
+    name = blob[i:i + name_len].decode("utf-8"); i += name_len
+    nonce = blob[i:i + 16]; i += 16
+    data = _lock_xor(blob[i:], key, nonce)
+    return name, data
+
+
+def lock_decrypt_file(locked_path, key):
+    """locked_path 를 복호화해 원래 파일로 되돌리고 .locked 를 지운다. 원본 경로 반환."""
+    name, data = _lock_read(locked_path, key)
+    original = os.path.join(os.path.dirname(locked_path), name)
+    tmp = original + ".tmp_unlock"
+    with open(tmp, "wb") as f:
+        f.write(data)
+    os.replace(tmp, original)
+    os.remove(locked_path)
+    return original
+
+
+def lock_decrypt_to_temp(locked_path, key):
+    """복호화한 내용을 임시 파일에 쓰고 그 경로를 돌려준다(원본 .locked 는 그대로).
+
+    잠금이 켜진(ON) 상태에서 파일을 '실행'만 할 때 쓴다. 원본 잠금은 유지된다.
+    """
+    name, data = _lock_read(locked_path, key)
+    d = tempfile.mkdtemp(prefix="unlock_")
+    out = os.path.join(d, name)
+    with open(out, "wb") as f:
+        f.write(data)
+    return out
+
+
+def find_files_with_word(root, word, recursive=False):
+    """root 아래에서 이름에 word 가 든 파일 경로 목록을 만든다(.locked 는 제외)."""
+    out = []
+    if not word:
+        return out
+    if recursive:
+        for dp, _dn, fns in os.walk(root):
+            for fn in sorted(fns):
+                if word in fn and not fn.endswith(LOCK_EXT):
+                    out.append(os.path.join(dp, fn))
+    else:
+        try:
+            names = sorted(os.listdir(root))
+        except OSError:
+            return out
+        for fn in names:
+            p = os.path.join(root, fn)
+            if word in fn and not fn.endswith(LOCK_EXT) and os.path.isfile(p):
+                out.append(p)
+    return out
+
+
 class Tooltip:
     """위젯에 마우스를 올리면 기능 설명을 말풍선으로 보여준다."""
 
@@ -546,6 +692,11 @@ class App:
         self.rn_find = tk.StringVar()
         self.rn_replace = tk.StringVar()
         self.rn_recursive = tk.BooleanVar(value=False)  # 하위 폴더까지 포함
+
+        # 파일 일괄 잠금 상태
+        self.lk_word = tk.StringVar()                   # 잠글 파일 이름에 든 단어
+        self._lock_key = None                           # 이번 실행 동안 기억하는 키
+        self._lk_rows = None                            # 잠금 목록이 들어가는 프레임
 
         self._setup_fonts()
         self._setup_style()
@@ -703,8 +854,9 @@ class App:
         self.min_btn.pack(side="right")
         # 이름 일괄 변경 화면으로 넘어가는 버튼
         self.nav_btn = self._button(
-            head, "이름 일괄변경  ▸", self.show_rename,
-            "폴더·파일 이름을 한 번에 바꾸는 화면으로 이동합니다", width=118)
+            head, "이름변경·잠금  ▸", self.show_rename,
+            "폴더·파일 이름을 한 번에 바꾸고, 특정 파일을 잠그는 화면으로 이동합니다",
+            width=124)
         self.nav_btn.pack(side="right", padx=(0, 8))
         self.status_chip = ctk.CTkLabel(
             head, textvariable=self.status_var, font=self.font_small,
@@ -930,8 +1082,8 @@ class App:
         head.pack(fill="x", padx=16, pady=(12, 8))
         self._button(head, "◂  동기화로", self.show_sync,
                      "폴더 동기화 화면으로 돌아갑니다", width=104).pack(side="left")
-        self._label(head, "이름 일괄 변경", font=self.font_title, fg=TEAL).pack(
-            side="left", padx=(12, 0))
+        self._label(head, "이름 일괄 변경 및 잠금 설정",
+                    font=self.font_title, fg=TEAL).pack(side="left", padx=(12, 0))
 
         body = ctk.CTkFrame(page, fg_color=BG, corner_radius=0)
         body.pack(fill="both", expand=True, padx=16, pady=(0, 12))
@@ -1016,6 +1168,55 @@ class App:
                            style="Sync.Vertical.TScrollbar")
         sb.pack(side="right", fill="y", pady=6, padx=(0, 4))
         self.rn_log.configure(yscrollcommand=sb.set)
+
+        # ----- 파일 일괄 잠금 -----
+        self._build_lock_ui(body)
+
+    # ---------------- 파일 일괄 잠금 화면 ----------------
+    def _build_lock_ui(self, body):
+        # 구역 제목
+        self._label(body, "특정 단어가 든 파일 일괄 잠금",
+                    font=self.font_b, fg=TEAL).pack(anchor="w", pady=(12, 2))
+        self._label(body, "위에서 고른 '대상 루트 폴더'와 '재귀' 설정을 그대로 사용합니다. "
+                          "잠근 파일은 이름 뒤에 .locked 가 붙고 내용이 암호화됩니다.",
+                    font=self.font_small, fg=MUTED).pack(anchor="w", pady=(0, 4))
+
+        # 잠글 단어 + 실행
+        c = self._card(body)
+        c.grid_columnconfigure(1, weight=1)
+        self._label(c, "잠글 단어").grid(row=0, column=0, sticky="w",
+                                       padx=(14, 8), pady=11)
+        self._entry(c, self.lk_word).grid(row=0, column=1, sticky="ew", pady=11)
+        self._button(c, "일괄 잠금", self.lock_bulk,
+                     "이름에 이 단어가 든 파일을 비밀번호로 한 번에 잠급니다",
+                     primary=True, width=110).grid(row=0, column=2,
+                                                   padx=(8, 14), pady=11)
+
+        # 전체 잠금 ON/OFF 상태
+        c = self._card(body)
+        c.grid_columnconfigure(0, weight=1)
+        self._lk_status_lbl = self._label(c, "", font=self.font_b, fg=TEXT)
+        self._lk_status_lbl.grid(row=0, column=0, sticky="w", padx=14, pady=(11, 2))
+        self.lk_toggle_btn = self._button(
+            c, "잠금 OFF로", self.lock_toggle,
+            "잠금을 끄면(OFF) 비번 없이 파일을 열 수 있습니다. 끄려면 비밀번호가 필요합니다",
+            width=120)
+        self.lk_toggle_btn.grid(row=0, column=1, padx=(8, 14), pady=(11, 2))
+        self._label(c, "잠금 ON: 파일을 열 때마다 비밀번호가 필요합니다 · "
+                       "잠금 OFF: 비밀번호 없이 바로 열 수 있습니다 "
+                       "(OFF 로 바꾸려면 비밀번호 필요).",
+                    font=self.font_small, fg=MUTED).grid(
+            row=1, column=0, columnspan=2, sticky="w", padx=14, pady=(0, 11))
+
+        # 잠금 관리 중인 파일 목록
+        c = self._card(body, pady=(0, 0))
+        self._label(c, "잠금 관리 중인 파일", font=self.font_b, fg=TEXT).pack(
+            anchor="w", padx=14, pady=(11, 4))
+        self._lk_rows = ctk.CTkScrollableFrame(
+            c, fg_color=INSET, corner_radius=10, height=150)
+        self._lk_rows.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        self._lock_refresh()
 
     # ---------------- 화면 전환 ----------------
     def show_rename(self):
@@ -1120,6 +1321,350 @@ class App:
         self._rn_write(f"===== 완료: {done}개 변경 / 오류 {len(errors)}개 =====")
         for old, new, e in errors:
             self._rn_write(f"[오류] {old} → {new}: {e}")
+
+    # ---------------- 파일 일괄 잠금 동작 ----------------
+    def _lock_state(self):
+        """설정 파일에서 잠금 상태를 읽어온다."""
+        cfg = load_config()
+        return {
+            "files": cfg.get("lock_files", []),
+            "salt": cfg.get("lock_salt", ""),
+            "verifier": cfg.get("lock_verifier", ""),
+            "on": bool(cfg.get("lock_on", False)),
+        }
+
+    def _lock_save(self, **kw):
+        """잠금 관련 항목만 설정 파일에 저장한다(다른 설정은 그대로)."""
+        mapping = {"files": "lock_files", "salt": "lock_salt",
+                   "verifier": "lock_verifier", "on": "lock_on"}
+        cfg = load_config()
+        for k, v in kw.items():
+            cfg[mapping[k]] = v
+        save_config(cfg)
+
+    def _password_modal(self, title, confirm=False, note=""):
+        """비밀번호 입력 창을 띄우고 입력값(문자열) 또는 None(취소) 을 돌려준다."""
+        win = tk.Toplevel(self.root)
+        win.title(title)
+        win.configure(bg=BG)
+        win.transient(self.root)
+        win.resizable(False, False)
+        result = {"pw": None}
+
+        frm = ctk.CTkFrame(win, fg_color=BG, corner_radius=0)
+        frm.pack(fill="both", expand=True, padx=18, pady=16)
+        self._label(frm, title, font=self.font_b).pack(anchor="w")
+        if note:
+            self._label(frm, note, font=self.font_small, fg=MUTED).pack(
+                anchor="w", pady=(2, 8))
+
+        v1 = tk.StringVar()
+        v2 = tk.StringVar()
+        e1 = ctk.CTkEntry(frm, textvariable=v1, show="●", width=240, height=30,
+                          corner_radius=10, font=self.font_n, fg_color=INSET,
+                          text_color=LOG_TEXT, border_color=SHADOW, border_width=1)
+        e1.pack(pady=(6, 4))
+        e2 = None
+        if confirm:
+            self._label(frm, "비밀번호 확인", font=self.font_small, fg=MUTED).pack(
+                anchor="w", pady=(6, 0))
+            e2 = ctk.CTkEntry(frm, textvariable=v2, show="●", width=240, height=30,
+                              corner_radius=10, font=self.font_n, fg_color=INSET,
+                              text_color=LOG_TEXT, border_color=SHADOW, border_width=1)
+            e2.pack(pady=(2, 4))
+        msg = self._label(frm, "", font=self.font_small, fg=TEAL_SOFT)
+        msg.pack(anchor="w")
+
+        def ok(*_a):
+            p1 = v1.get()
+            if not p1:
+                msg.configure(text="비밀번호를 입력하세요.")
+                return
+            if confirm and p1 != v2.get():
+                msg.configure(text="두 비밀번호가 일치하지 않습니다.")
+                return
+            result["pw"] = p1
+            win.destroy()
+
+        def cancel(*_a):
+            win.destroy()
+
+        btns = ctk.CTkFrame(frm, fg_color="transparent")
+        btns.pack(fill="x", pady=(10, 0))
+        self._button(btns, "취소", cancel, width=90).pack(side="right")
+        self._button(btns, "확인", ok, primary=True, width=90).pack(
+            side="right", padx=(0, 8))
+
+        win.bind("<Return>", ok)
+        win.bind("<Escape>", cancel)
+        win.update_idletasks()
+        # 부모 창 가운데에 띄운다
+        px = self.root.winfo_rootx() + (self.root.winfo_width()
+                                        - win.winfo_reqwidth()) // 2
+        py = self.root.winfo_rooty() + 80
+        win.geometry(f"+{max(px, 0)}+{max(py, 0)}")
+        e1.focus_set()
+        win.grab_set()
+        self.root.wait_window(win)
+        return result["pw"]
+
+    def _lock_key_new_or_verify(self):
+        """일괄 잠금용 키를 얻는다. 비번이 없으면 새로 설정하고, 있으면 확인한다."""
+        st = self._lock_state()
+        if st["verifier"]:
+            pw = self._password_modal(
+                "잠금 비밀번호 입력",
+                note="이미 설정된 잠금 비밀번호를 입력하세요.")
+            if pw is None:
+                return None
+            key = lock_check_password(pw, st["salt"], st["verifier"])
+            if key is None:
+                messagebox.showwarning("확인", "비밀번호가 올바르지 않습니다.")
+                return None
+            self._lock_key = key
+            return key
+        # 처음 잠그는 경우: 새 비밀번호 설정
+        pw = self._password_modal(
+            "새 잠금 비밀번호 설정", confirm=True,
+            note="이 비밀번호로 파일을 잠급니다. 잊어버리면 되돌릴 수 없으니 주의하세요.")
+        if pw is None:
+            return None
+        salt_hex, verifier, key = lock_make_verifier(pw)
+        self._lock_save(salt=salt_hex, verifier=verifier)
+        self._lock_key = key
+        return key
+
+    def _lock_key_verify(self, note="비밀번호를 입력하세요."):
+        """잠금 비밀번호를 확인해 key 를 얻는다(설정된 비번이 없으면 None)."""
+        st = self._lock_state()
+        if not st["verifier"]:
+            return None
+        pw = self._password_modal("잠금 비밀번호 입력", note=note)
+        if pw is None:
+            return None
+        key = lock_check_password(pw, st["salt"], st["verifier"])
+        if key is None:
+            messagebox.showwarning("확인", "비밀번호가 올바르지 않습니다.")
+            return None
+        self._lock_key = key
+        return key
+
+    def _lock_encrypt_all(self, key, files):
+        """아직 잠기지 않은 관리 파일들을 모두 잠근다."""
+        done, errors = 0, []
+        for p in files:
+            if os.path.exists(p + LOCK_EXT):
+                continue                    # 이미 잠김
+            if not os.path.exists(p):
+                errors.append((p, "파일을 찾을 수 없습니다."))
+                continue
+            try:
+                lock_encrypt_file(p, key)
+                done += 1
+            except Exception as e:          # noqa: BLE001
+                errors.append((p, str(e)))
+        return done, errors
+
+    def _lock_decrypt_all(self, key, files):
+        """잠겨 있는 관리 파일들을 모두 푼다."""
+        done, errors = 0, []
+        for p in files:
+            locked = p + LOCK_EXT
+            if not os.path.exists(locked):
+                continue                    # 이미 풀림
+            try:
+                lock_decrypt_file(locked, key)
+                done += 1
+            except Exception as e:          # noqa: BLE001
+                errors.append((p, str(e)))
+        return done, errors
+
+    def lock_bulk(self):
+        """이름에 특정 단어가 든 파일을 찾아 비밀번호로 일괄 잠근다."""
+        root = self.rn_root.get().strip()
+        if not root or not os.path.isdir(root):
+            messagebox.showwarning("확인", "대상 루트 폴더를 올바르게 지정하세요.")
+            return
+        word = self.lk_word.get().strip()
+        if not word:
+            messagebox.showwarning("확인", "잠글 파일 이름에 포함된 단어를 입력하세요.")
+            return
+        st = self._lock_state()
+        already = set(st["files"])
+        found = [p for p in find_files_with_word(root, word, self.rn_recursive.get())
+                 if p not in already]
+        if not found:
+            messagebox.showinfo(
+                "안내", f"'{word}' 이(가) 이름에 든 새 파일을 찾지 못했습니다.")
+            return
+        sample = "\n".join(os.path.basename(p) for p in found[:10])
+        more = "" if len(found) <= 10 else f"\n... 외 {len(found) - 10}개"
+        if not messagebox.askyesno(
+                "일괄 잠금 확인",
+                f"'{word}' 이(가) 든 파일 {len(found)}개를 잠글까요?\n\n{sample}{more}"):
+            return
+        key = self._lock_key_new_or_verify()
+        if key is None:
+            return
+        files = st["files"] + found
+        # 관리 목록 전체가 '잠김(ON)' 상태가 되도록 아직 안 잠긴 것도 모두 잠근다
+        done, errors = self._lock_encrypt_all(key, files)
+        self._lock_save(files=files, on=True)
+        self._lock_refresh()
+        if errors:
+            detail = "\n".join(f"- {os.path.basename(p)}: {e}"
+                               for p, e in errors[:5])
+            messagebox.showwarning(
+                "일부 오류", f"{done}개를 잠갔습니다. 오류 {len(errors)}개\n{detail}")
+        else:
+            messagebox.showinfo("완료", f"파일 {done}개를 잠갔습니다.")
+
+    def lock_toggle(self):
+        """전체 잠금 ON/OFF 를 전환한다. OFF 로 바꿀 때는 반드시 비밀번호를 확인한다."""
+        st = self._lock_state()
+        if not st["files"]:
+            messagebox.showinfo(
+                "안내", "잠금 관리 중인 파일이 없습니다. 먼저 '일괄 잠금'을 하세요.")
+            return
+        if st["on"]:
+            # 잠금 ON -> OFF : 반드시 비밀번호 확인
+            key = self._lock_key_verify(
+                note="잠금을 끄면(OFF) 비밀번호 없이 파일을 열 수 있습니다.\n"
+                     "끄려면 비밀번호를 입력하세요.")
+            if key is None:
+                return
+            done, errors = self._lock_decrypt_all(key, st["files"])
+            self._lock_save(on=False)
+            summary = f"잠금 OFF: 파일 {done}개를 열었습니다."
+        else:
+            # 잠금 OFF -> ON : 이번 실행에서 확인한 키가 있으면 그대로 사용
+            key = self._lock_key
+            if not lock_key_matches_verifier(key, st["verifier"]):
+                key = self._lock_key_verify(
+                    note="잠금을 켜려면(ON) 비밀번호를 입력하세요.")
+                if key is None:
+                    return
+            done, errors = self._lock_encrypt_all(key, st["files"])
+            self._lock_save(on=True)
+            summary = f"잠금 ON: 파일 {done}개를 잠갔습니다."
+        self._lock_refresh()
+        if errors:
+            messagebox.showwarning(
+                "일부 오류", f"{summary}\n오류 {len(errors)}개")
+        else:
+            messagebox.showinfo("완료", summary)
+
+    def _os_open(self, path):
+        """운영체제 기본 프로그램으로 파일을 연다."""
+        try:
+            if sys.platform == "win32":
+                os.startfile(path)          # noqa: SLF001
+            elif sys.platform == "darwin":
+                import subprocess
+                subprocess.Popen(["open", path])
+            else:
+                import subprocess
+                subprocess.Popen(["xdg-open", path])
+        except Exception as e:              # noqa: BLE001
+            messagebox.showwarning("오류", f"파일을 열 수 없습니다: {e}")
+
+    def lock_open(self, path):
+        """관리 파일을 연다.
+
+        잠금 OFF: 비밀번호 없이 바로 연다.
+        잠금 ON : 비밀번호를 확인한 뒤, 임시로 복호화한 사본을 열어 실행한다
+                  (원본 잠금은 그대로 유지).
+        """
+        st = self._lock_state()
+        locked = path + LOCK_EXT
+        if st["on"]:
+            key = self._lock_key_verify(
+                note="이 파일을 열려면 비밀번호를 입력하세요.")
+            if key is None:
+                return
+            if not os.path.exists(locked):
+                # 이미 풀려 있으면 그냥 연다(상태 불일치 방어)
+                if os.path.exists(path):
+                    self._os_open(path)
+                else:
+                    messagebox.showwarning("오류", "파일을 찾을 수 없습니다.")
+                return
+            try:
+                tmp = lock_decrypt_to_temp(locked, key)
+            except Exception as e:          # noqa: BLE001
+                messagebox.showwarning("오류", f"파일을 여는 중 오류: {e}")
+                return
+            self._os_open(tmp)
+        else:
+            # 잠금 OFF: 비밀번호 없이 열기
+            if os.path.exists(path):
+                self._os_open(path)
+            elif os.path.exists(locked):
+                messagebox.showinfo(
+                    "안내", "이 파일은 아직 잠겨 있습니다. 잠금을 켠 뒤 비밀번호로 여세요.")
+            else:
+                messagebox.showwarning("오류", "파일을 찾을 수 없습니다.")
+
+    def lock_unmanage(self, path):
+        """파일을 잠금 관리에서 뺀다. 잠겨 있으면 풀고 목록에서 제거한다."""
+        st = self._lock_state()
+        locked = path + LOCK_EXT
+        if os.path.exists(locked):
+            # 잠긴 상태라면 풀어서 원래 파일로 돌려놓아야 하므로 비밀번호 확인
+            key = self._lock_key_verify(
+                note="관리에서 빼려면 파일을 먼저 풀어야 합니다. 비밀번호를 입력하세요.")
+            if key is None:
+                return
+            try:
+                lock_decrypt_file(locked, key)
+            except Exception as e:          # noqa: BLE001
+                messagebox.showwarning("오류", f"파일을 푸는 중 오류: {e}")
+                return
+        files = [p for p in st["files"] if p != path]
+        # 남은 관리 파일이 없으면 잠금 설정(비번 포함)을 깨끗이 지운다
+        if files:
+            self._lock_save(files=files)
+        else:
+            self._lock_save(files=[], on=False, salt="", verifier="")
+            self._lock_key = None
+        self._lock_refresh()
+
+    def _lock_refresh(self):
+        """잠금 상태 라벨과 파일 목록을 현재 설정에 맞게 다시 그린다."""
+        st = self._lock_state()
+        on = st["on"]
+        # 상태 라벨 / 토글 버튼
+        if hasattr(self, "_lk_status_lbl"):
+            self._lk_status_lbl.configure(
+                text=("전체 잠금 상태:  ON (잠김)" if on
+                      else "전체 잠금 상태:  OFF (열림)"),
+                text_color=(TEAL if on else TEAL_SOFT))
+        if hasattr(self, "lk_toggle_btn"):
+            self.lk_toggle_btn.configure(
+                text=("잠금 OFF로" if on else "잠금 ON으로"))
+        # 파일 목록
+        if not self._lk_rows:
+            return
+        for w in self._lk_rows.winfo_children():
+            w.destroy()
+        if not st["files"]:
+            self._label(self._lk_rows, "잠금 관리 중인 파일이 없습니다.",
+                        font=self.font_small, fg=MUTED).pack(
+                anchor="w", padx=6, pady=8)
+            return
+        for path in st["files"]:
+            locked = os.path.exists(path + LOCK_EXT)
+            row = ctk.CTkFrame(self._lk_rows, fg_color="transparent")
+            row.pack(fill="x", padx=4, pady=2)
+            mark = "🔒" if locked else "🔓"
+            self._label(row, f"{mark}  {os.path.basename(path)}",
+                        font=self.font_n, fg=TEXT).pack(side="left")
+            self._button(row, "관리 해제", lambda p=path: self.lock_unmanage(p),
+                         "이 파일을 잠금 관리에서 뺍니다(잠겨 있으면 풀어서 되돌립니다)",
+                         width=84).pack(side="right", padx=(6, 4))
+            self._button(row, "열기", lambda p=path: self.lock_open(p),
+                         "파일을 엽니다(잠금 ON 이면 비밀번호가 필요합니다)",
+                         width=64).pack(side="right")
 
     # ---------------- 폴더 선택 / 쌍 관리 ----------------
     def browse_src(self):
