@@ -777,7 +777,10 @@ class App:
         # 파일/폴더 일괄 잠금 상태
         self.lk_word = tk.StringVar()                   # 잠글 이름에 든 단어
         self.lk_target = tk.StringVar(value="file")     # file=파일 / dir=폴더
+        self.lk_search = tk.StringVar()                 # 잠금 목록 이름 검색어
         self._lock_pw = None                            # 이번 실행 동안 기억하는 비밀번호
+        # 검색어가 바뀌면 목록을 즉시 다시 그린다
+        self.lk_search.trace_add("write", lambda *_a: self._lock_refresh())
         self._lk_rows = None                            # 잠금 목록이 들어가는 프레임
 
         self._setup_fonts()
@@ -1311,10 +1314,16 @@ class App:
                     font=self.font_small, fg=MUTED).grid(
             row=1, column=0, columnspan=2, sticky="w", padx=14, pady=(0, 11))
 
-        # 잠금 관리 중인 파일 목록
+        # 잠금 관리 중인 파일 목록 (+ 이름 검색)
         c = self._card(body, pady=(0, 0))
-        self._label(c, "잠금 관리 중인 파일", font=self.font_b, fg=TEXT).pack(
-            anchor="w", padx=14, pady=(11, 4))
+        hdr = ctk.CTkFrame(c, fg_color="transparent")
+        hdr.pack(fill="x", padx=14, pady=(11, 4))
+        self._label(hdr, "잠금 관리 중인 파일", font=self.font_b, fg=TEXT).pack(
+            side="left")
+        ctk.CTkEntry(hdr, textvariable=self.lk_search, width=180, height=28,
+                     corner_radius=9, font=self.font_n, fg_color=INSET,
+                     text_color=LOG_TEXT, border_color=SHADOW, border_width=1,
+                     placeholder_text="이름으로 검색").pack(side="right")
         self._lk_rows = ctk.CTkScrollableFrame(
             c, fg_color=INSET, corner_radius=10, height=150)
         self._lk_rows.pack(fill="both", expand=True, padx=10, pady=(0, 10))
@@ -1866,7 +1875,20 @@ class App:
                         font=self.font_small, fg=MUTED).pack(
                 anchor="w", padx=6, pady=8)
             return
-        for e in st["files"]:
+        # 이름 검색어로 거른다(대소문자 무시)
+        term = self.lk_search.get().strip() if hasattr(self, "lk_search") else ""
+        if term:
+            low = term.lower()
+            rows = [e for e in st["files"]
+                    if low in os.path.basename(e["path"]).lower()]
+        else:
+            rows = st["files"]
+        if not rows:
+            self._label(self._lk_rows, f"‘{term}’ 검색 결과가 없습니다.",
+                        font=self.font_small, fg=MUTED).pack(
+                anchor="w", padx=6, pady=8)
+            return
+        for e in rows:
             path, is_dir = e["path"], e["dir"]
             locked = os.path.exists(path + LOCK_SUFFIX)
             row = ctk.CTkFrame(self._lk_rows, fg_color="transparent")
