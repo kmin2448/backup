@@ -1166,8 +1166,8 @@ class App:
         self._label(body, "특정 단어가 든 파일 일괄 잠금",
                     font=self.font_b, fg=TEAL).pack(anchor="w", pady=(12, 2))
         self._label(body, "위에서 고른 '대상 루트 폴더'와 '재귀' 설정을 그대로 사용합니다. "
-                          "잠근 파일은 이름 뒤에 .locked.zip 이 붙는 암호 ZIP 이 되어, "
-                          "이 프로그램 없이도 암호만 알면 7-Zip 등으로 풀 수 있습니다.",
+                          "잠근 파일은 이름 뒤에 .locked.zip 이 붙는 AES 암호 ZIP 이 되어, "
+                          "이 프로그램 없이도 무료 7-Zip·Keka 등으로 암호만 알면 풀 수 있습니다.",
                     font=self.font_small, fg=MUTED).pack(anchor="w", pady=(0, 4))
 
         # 잠글 단어 + 실행
