@@ -776,7 +776,9 @@ class App:
 
         # 파일/폴더 일괄 잠금 상태
         self.lk_word = tk.StringVar()                   # 잠글 이름에 든 단어
-        self.lk_target = tk.StringVar(value="file")     # file=파일 / dir=폴더
+        # 잠금 대상: 파일·폴더를 각각 독립적으로 켤 수 있다(둘 다 선택 가능).
+        self.lk_lock_file = tk.BooleanVar(value=True)   # 파일을 잠금 대상으로
+        self.lk_lock_dir = tk.BooleanVar(value=False)   # 폴더(통째로)를 잠금 대상으로
         self.lk_search = tk.StringVar()                 # 잠금 목록 이름 검색어
         self._lock_pw = None                            # 이번 실행 동안 기억하는 비밀번호
         # 검색어가 바뀌면 목록을 즉시 다시 그린다
@@ -792,10 +794,10 @@ class App:
 
         # 창 크기를 내용에 딱 맞춰 세로 스크롤이 생기지 않도록 한다.
         root.update_idletasks()
-        w = min(root.winfo_reqwidth(), 820)
+        w = min(root.winfo_reqwidth(), 1040)
         h = root.winfo_reqheight()
-        root.geometry(f"{max(w, 520)}x{h}")
-        root.minsize(520, 460)
+        root.geometry(f"{max(w, 720)}x{h}")
+        root.minsize(720, 380)
 
         self.root.after(100, self._drain_queues)
         self.root.after(1000, self._schedule_tick)
@@ -915,6 +917,13 @@ class App:
                                   border_color=SHADOW, radiobutton_width=20,
                                   radiobutton_height=20)
 
+    def _lock_check(self, parent, text, var):
+        """잠금 대상(파일·폴더) 선택용 체크박스 — 파일·폴더를 각각 독립적으로 켠다."""
+        return ctk.CTkCheckBox(parent, text=text, variable=var, font=self.font_n,
+                               text_color=TEXT, fg_color=TEAL, hover_color=TEAL_DARK,
+                               border_color=SHADOW, checkbox_width=20,
+                               checkbox_height=20)
+
     def _label(self, parent, text, font=None, fg=TEXT, bg=None):
         return ctk.CTkLabel(parent, text=text, font=font or self.font_n,
                             text_color=fg, fg_color="transparent")
@@ -949,12 +958,21 @@ class App:
         self.status_chip.pack(side="right", padx=(0, 8))
 
         # 설정 영역(컴팩트 모드에서 통째로 숨김) — 아래 카드들을 담는 컨테이너
+        # 세로 길이를 줄이기 위해 카드들을 좌·우 2단으로 나눠 배치한다.
+        #   왼쪽: 폴더 선택 · 목록 · 예약 (무엇을 동기화할지)
+        #   오른쪽: 옵션 · 제외/예외      (어떻게 동기화할지)
         self.full_frame = ctk.CTkFrame(main, fg_color="transparent")
         self.full_frame.pack(fill="x")
         full = self.full_frame
+        full.grid_columnconfigure(0, weight=1, uniform="cols")
+        full.grid_columnconfigure(1, weight=1, uniform="cols")
+        col_left = ctk.CTkFrame(full, fg_color="transparent")
+        col_left.grid(row=0, column=0, sticky="new", padx=(0, 6))
+        col_right = ctk.CTkFrame(full, fg_color="transparent")
+        col_right.grid(row=0, column=1, sticky="new", padx=(6, 0))
 
-        # 폴더 선택 카드
-        c = self._card(full)
+        # 폴더 선택 카드 (왼쪽)
+        c = self._card(col_left)
         c.grid_columnconfigure(1, weight=1)
         self._label(c, "원본 폴더").grid(row=0, column=0, sticky="w",
                                       padx=(14, 8), pady=(11, 5))
@@ -973,8 +991,8 @@ class App:
                      primary=True).grid(row=2, column=0, columnspan=3, sticky="ew",
                                         padx=14, pady=(5, 11))
 
-        # 폴더 목록 카드
-        c = self._card(full)
+        # 폴더 목록 카드 (왼쪽)
+        c = self._card(col_left)
         head = ctk.CTkFrame(c, fg_color="transparent")
         head.pack(fill="x", padx=14, pady=(10, 3))
         ctk.CTkLabel(head, textvariable=self.count_var, font=self.font_small,
@@ -985,8 +1003,8 @@ class App:
         holder.pack(fill="both", expand=True, padx=14)
         tf = tk.Frame(holder, bg=INSET)
         tf.pack(fill="both", expand=True, padx=6, pady=6)
-        self.tree = ttk.Treeview(tf, show="tree", style="Sync.Treeview", height=2)
-        self.tree.column("#0", width=560, anchor="w")
+        self.tree = ttk.Treeview(tf, show="tree", style="Sync.Treeview", height=3)
+        self.tree.column("#0", width=300, anchor="w")
         self.tree.pack(side="left", fill="both", expand=True)
         self.tree.bind("<Double-1>", self.load_selected)
         sb = ttk.Scrollbar(tf, command=self.tree.yview, style="Sync.Vertical.TScrollbar")
@@ -999,8 +1017,8 @@ class App:
         self._button(lb, "전체 비우기", self.clear_pairs,
                      "동기화 목록을 모두 비웁니다", width=104).pack(side="left", padx=(8, 0))
 
-        # 옵션 카드
-        c = self._card(full)
+        # 옵션 카드 (오른쪽)
+        c = self._card(col_right)
         self._label(c, "같은 이름의 파일이 대상에 있을 때",
                     font=self.font_b, fg=TEXT).pack(anchor="w", padx=14, pady=(10, 3))
         self._conflict_radio(c, "무조건 건너뛰기 (덮어쓰지 않음)", "skip").pack(
@@ -1017,8 +1035,8 @@ class App:
         self._check(c, "삭제 전 확인 (켜면 삭제 직전에 한 번 물어봅니다)",
                     self.confirm_delete_var).pack(anchor="w", padx=14, pady=(0, 9))
 
-        # 제외 카드 (특정 단어를 포함한 폴더명/파일명 건너뛰기)
-        c = self._card(full)
+        # 제외 카드 (오른쪽) — 특정 단어를 포함한 폴더명/파일명 건너뛰기
+        c = self._card(col_right)
         c.grid_columnconfigure(1, weight=1)
         self._label(c, "동기화에서 제외할 이름 (원본·대상 모두 건너뜀)",
                     font=self.font_b, fg=TEXT).grid(
@@ -1069,8 +1087,8 @@ class App:
         inc_dir_entry.bind("<FocusOut>", lambda _e: self._persist())
         inc_file_entry.bind("<FocusOut>", lambda _e: self._persist())
 
-        # 예약 카드
-        c = self._card(full)
+        # 예약 카드 (왼쪽)
+        c = self._card(col_left)
         self._check(c, "예약 실행 (프로그램이 켜져 있는 동안 자동 동기화)",
                     self.sched_enabled).grid(row=0, column=0, columnspan=6,
                                              sticky="w", padx=14, pady=(10, 4))
@@ -1145,7 +1163,7 @@ class App:
             self.title_box.pack(side="left")
             self.nav_btn.pack(side="right", padx=(0, 8))
             self.min_btn.configure(text="▁  최소화")
-            self.root.minsize(520, 460)
+            self.root.minsize(720, 380)
             if self._full_geometry:
                 self.root.geometry(self._full_geometry)
 
@@ -1272,9 +1290,10 @@ class App:
         c.grid_columnconfigure(1, weight=1)
         trow = ctk.CTkFrame(c, fg_color="transparent")
         trow.grid(row=0, column=0, columnspan=3, sticky="w", padx=14, pady=(11, 2))
-        self._label(trow, "무엇을 잠글까요?").pack(side="left", padx=(0, 12))
-        self._pradio(trow, "파일", self.lk_target, "file").pack(side="left")
-        self._pradio(trow, "폴더(통째로)", self.lk_target, "dir").pack(
+        self._label(trow, "무엇을 잠글까요? (둘 다 선택 가능)").pack(
+            side="left", padx=(0, 12))
+        self._lock_check(trow, "파일", self.lk_lock_file).pack(side="left")
+        self._lock_check(trow, "폴더(통째로)", self.lk_lock_dir).pack(
             side="left", padx=(18, 0))
         self._label(c, "잠글 단어").grid(row=1, column=0, sticky="w",
                                        padx=(14, 8), pady=(4, 11))
@@ -1346,7 +1365,7 @@ class App:
     def show_sync(self):
         self.page_rename.pack_forget()
         self.page_sync.pack(fill="both", expand=True, padx=16, pady=12)
-        self.root.minsize(520, 460)
+        self.root.minsize(720, 380)
         if getattr(self, "_sync_geometry", None):
             self.root.geometry(self._sync_geometry)
 
@@ -1632,19 +1651,31 @@ class App:
             messagebox.showwarning("확인", "대상 루트 폴더를 올바르게 지정하세요.")
             return
         word = self.lk_word.get().strip()
-        is_dir = self.lk_target.get() == "dir"
-        kind = "폴더" if is_dir else "파일"
+        lock_file = self.lk_lock_file.get()
+        lock_dir = self.lk_lock_dir.get()
+        if not lock_file and not lock_dir:
+            messagebox.showwarning("확인", "잠글 대상(파일·폴더)을 하나 이상 선택하세요.")
+            return
+        kind = "·".join(k for k, on in (("파일", lock_file), ("폴더", lock_dir)) if on)
         if not word:
             messagebox.showwarning("확인", f"잠글 {kind} 이름에 포함된 단어를 입력하세요.")
             return
         st = self._lock_state()
         already = {e["path"] for e in st["files"]}
         recursive = self.rn_recursive.get()
-        if is_dir:
-            cand = find_folders_with_word(root, word, recursive)
-        else:
-            cand = find_files_with_word(root, word, recursive)
-        found = [{"path": p, "dir": is_dir} for p in cand if p not in already]
+        # 파일을 먼저, 폴더를 나중에 잠근다: 잠글 폴더 안에 잠글 파일이 있어도
+        # 파일이 먼저 안전하게 잠긴 뒤 폴더가 통째로 묶이도록 순서를 보장한다.
+        found, seen = [], set()
+        if lock_file:
+            for p in find_files_with_word(root, word, recursive):
+                if p not in already and p not in seen:
+                    seen.add(p)
+                    found.append({"path": p, "dir": False})
+        if lock_dir:
+            for p in find_folders_with_word(root, word, recursive):
+                if p not in already and p not in seen:
+                    seen.add(p)
+                    found.append({"path": p, "dir": True})
         if not found:
             messagebox.showinfo(
                 "안내", f"'{word}' 이(가) 이름에 든 새 {kind}을(를) 찾지 못했습니다.")
