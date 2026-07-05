@@ -1332,6 +1332,24 @@ class App:
                      primary=True, width=110).grid(row=1, column=2,
                                                    padx=(8, 14), pady=(4, 11))
 
+        # 잠금 비밀번호 설정/변경 + 분실 대비
+        c = self._card(body)
+        c.grid_columnconfigure(0, weight=1)
+        self._lk_pw_lbl = self._label(c, "", font=self.font_b, fg=TEXT)
+        self._lk_pw_lbl.grid(row=0, column=0, sticky="w", padx=14, pady=(11, 2))
+        self.lk_pw_btn = self._button(
+            c, "비밀번호 설정", self.set_lock_password,
+            "일괄 잠금에 쓸 비밀번호를 설정하거나 변경합니다(힌트도 함께 저장)",
+            primary=True, width=120)
+        self.lk_pw_btn.grid(row=0, column=1, padx=(8, 14), pady=(11, 2))
+        self._lk_hint_lbl = self._label(c, "", font=self.font_small, fg=MUTED,
+                                        wrap=470)
+        self._lk_hint_lbl.grid(row=1, column=0, columnspan=2, sticky="w",
+                               padx=14, pady=(0, 4))
+        self._button(c, "비밀번호를 잊었다면?", self.show_lock_pw_help,
+                     "비밀번호 분실 시 대처 방법을 안내합니다", width=150).grid(
+            row=2, column=0, sticky="w", padx=14, pady=(0, 11))
+
         # 전체 잠금 ON/OFF 상태
         c = self._card(body)
         c.grid_columnconfigure(0, weight=1)
@@ -1502,35 +1520,47 @@ class App:
             "salt": cfg.get("lock_salt", ""),
             "verifier": cfg.get("lock_verifier", ""),
             "on": bool(cfg.get("lock_on", False)),
+            "hint": cfg.get("lock_hint", ""),   # 비밀번호 힌트(평문 · 비번 자체 아님)
         }
 
     def _lock_save(self, **kw):
         """잠금 관련 항목만 설정 파일에 저장한다(다른 설정은 그대로)."""
         mapping = {"files": "lock_files", "salt": "lock_salt",
-                   "verifier": "lock_verifier", "on": "lock_on"}
+                   "verifier": "lock_verifier", "on": "lock_on",
+                   "hint": "lock_hint"}
         cfg = load_config()
         for k, v in kw.items():
             cfg[mapping[k]] = v
         save_config(cfg)
 
-    def _password_modal(self, title, confirm=False, note=""):
-        """비밀번호 입력 창을 띄우고 입력값(문자열) 또는 None(취소) 을 돌려준다."""
+    def _password_modal(self, title, confirm=False, note="",
+                        hint_field=False, hint_default="", show_hint=""):
+        """비밀번호 입력 창을 띄운다.
+
+        - hint_field=True: 비밀번호 '힌트' 입력칸을 함께 보여주고 (비번, 힌트)
+          튜플을 돌려준다(취소 시 None). 그 외에는 비밀번호 문자열(취소 시 None).
+        - show_hint: 미리 저장된 힌트를 안내로 표시한다(입력이 아니라 참고용).
+        """
         win = tk.Toplevel(self.root)
         win.title(title)
         win.configure(bg=BG)
         win.transient(self.root)
         win.resizable(False, False)
-        result = {"pw": None}
+        result = {"pw": None, "hint": hint_default}
 
         frm = ctk.CTkFrame(win, fg_color=BG, corner_radius=0)
         frm.pack(fill="both", expand=True, padx=18, pady=16)
         self._label(frm, title, font=self.font_b).pack(anchor="w")
         if note:
-            self._label(frm, note, font=self.font_small, fg=MUTED).pack(
-                anchor="w", pady=(2, 8))
+            self._label(frm, note, font=self.font_small, fg=MUTED, wrap=300).pack(
+                anchor="w", pady=(2, 6))
+        if show_hint:
+            self._label(frm, f"💡 힌트: {show_hint}", font=self.font_small,
+                        fg=TEAL, wrap=300).pack(anchor="w", pady=(0, 6))
 
         v1 = tk.StringVar()
         v2 = tk.StringVar()
+        vh = tk.StringVar(value=hint_default)
         e1 = ctk.CTkEntry(frm, textvariable=v1, show="●", width=240, height=30,
                           corner_radius=10, font=self.font_n, fg_color=INSET,
                           text_color=LOG_TEXT, border_color=SHADOW, border_width=1)
@@ -1543,6 +1573,13 @@ class App:
                               corner_radius=10, font=self.font_n, fg_color=INSET,
                               text_color=LOG_TEXT, border_color=SHADOW, border_width=1)
             e2.pack(pady=(2, 4))
+        if hint_field:
+            self._label(frm, "비밀번호 힌트 (선택 · 비밀번호가 아니라 기억을 돕는 메모)",
+                        font=self.font_small, fg=MUTED).pack(anchor="w", pady=(6, 0))
+            eh = ctk.CTkEntry(frm, textvariable=vh, width=240, height=30,
+                              corner_radius=10, font=self.font_n, fg_color=INSET,
+                              text_color=LOG_TEXT, border_color=SHADOW, border_width=1)
+            eh.pack(pady=(2, 4))
         msg = self._label(frm, "", font=self.font_small, fg=TEAL_SOFT)
         msg.pack(anchor="w")
 
@@ -1555,6 +1592,7 @@ class App:
                 msg.configure(text="두 비밀번호가 일치하지 않습니다.")
                 return
             result["pw"] = p1
+            result["hint"] = vh.get().strip()
             win.destroy()
 
         def cancel(*_a):
@@ -1577,6 +1615,8 @@ class App:
         e1.focus_set()
         win.grab_set()
         self.root.wait_window(win)
+        if hint_field:
+            return (result["pw"], result["hint"]) if result["pw"] is not None else None
         return result["pw"]
 
     def _require_pyzipper(self):
@@ -1596,7 +1636,8 @@ class App:
         if st["verifier"]:
             pw = self._password_modal(
                 "잠금 비밀번호 입력",
-                note="이미 설정된 잠금 비밀번호를 입력하세요.")
+                note="이미 설정된 잠금 비밀번호를 입력하세요.",
+                show_hint=st.get("hint", ""))
             if pw is None:
                 return None
             if not lock_check_password(pw, st["salt"], st["verifier"]):
@@ -1604,15 +1645,16 @@ class App:
                 return None
             self._lock_pw = pw
             return pw
-        # 처음 잠그는 경우: 새 비밀번호 설정
-        pw = self._password_modal(
-            "새 잠금 비밀번호 설정", confirm=True,
-            note="이 비밀번호로 파일을 잠급니다. 받는 사람도 이 비밀번호로 풉니다.\n"
-                 "잊어버리면 되돌릴 수 없으니 주의하세요.")
-        if pw is None:
+        # 처음 잠그는 경우: 새 비밀번호 + 힌트 설정
+        res = self._password_modal(
+            "새 잠금 비밀번호 설정", confirm=True, hint_field=True,
+            note="이 비밀번호로 파일을 잠급니다. 받는 사람도 이 비밀번호로 풉니다. "
+                 "잊어버리면 되돌릴 수 없으니 아래 힌트를 함께 적어 두세요.")
+        if res is None:
             return None
+        pw, hint = res
         salt_hex, verifier = lock_make_verifier(pw)
-        self._lock_save(salt=salt_hex, verifier=verifier)
+        self._lock_save(salt=salt_hex, verifier=verifier, hint=hint)
         self._lock_pw = pw
         return pw
 
@@ -1621,7 +1663,8 @@ class App:
         st = self._lock_state()
         if not st["verifier"]:
             return None
-        pw = self._password_modal("잠금 비밀번호 입력", note=note)
+        pw = self._password_modal("잠금 비밀번호 입력", note=note,
+                                  show_hint=st.get("hint", ""))
         if pw is None:
             return None
         if not lock_check_password(pw, st["salt"], st["verifier"]):
@@ -1629,6 +1672,75 @@ class App:
             return None
         self._lock_pw = pw
         return pw
+
+    def set_lock_password(self):
+        """일괄 잠금에 쓸 비밀번호를 설정하거나 변경한다(+ 힌트).
+
+        이미 비번이 있으면 현재 비번을 먼저 확인한다. 잠긴 파일이 있으면 현재
+        비번으로 모두 풀었다가 새 비번으로 다시 잠가, 새 비번으로 통일한다.
+        """
+        if not self._require_pyzipper():
+            return
+        st = self._lock_state()
+        has_pw = bool(st["verifier"])
+        old_pw = None
+        if has_pw:
+            old_pw = self._lock_pw_verify(
+                note="비밀번호를 바꾸려면 현재 잠금 비밀번호를 먼저 입력하세요.")
+            if old_pw is None:
+                return
+        res = self._password_modal(
+            "잠금 비밀번호 변경" if has_pw else "새 잠금 비밀번호 설정",
+            confirm=True, hint_field=True, hint_default=st.get("hint", ""),
+            note="이 비밀번호로 파일·폴더를 잠급니다. 비밀번호 자체는 저장하지 "
+                 "않으므로, 잊으면 되돌릴 수 없습니다. 아래 힌트를 함께 적어 두세요.")
+        if res is None:
+            return
+        new_pw, hint = res
+        # 이미 잠겨 있는 항목이 있으면 현재 비번으로 풀고 새 비번으로 다시 잠근다.
+        reenc = ""
+        if has_pw and st["on"] and st["files"]:
+            locked_now = [e for e in st["files"]
+                          if os.path.exists(e["path"] + LOCK_SUFFIX)]
+            d1, e1 = self._lock_decrypt_all(old_pw, locked_now)
+            d2, e2 = self._lock_encrypt_all(new_pw, st["files"])
+            if e1 or e2:
+                errs = (e1 + e2)[:5]
+                detail = "\n".join(f"- {os.path.basename(p)}: {m}" for p, m in errs)
+                messagebox.showwarning(
+                    "일부 오류",
+                    f"{d2}개는 새 비밀번호로 다시 잠갔지만 오류 {len(e1) + len(e2)}개가 "
+                    f"있습니다. 아래 항목은 여전히 이전 비밀번호일 수 있습니다.\n{detail}")
+            reenc = f"\n잠겨 있던 {d2}개를 새 비밀번호로 다시 잠갔습니다."
+        salt_hex, verifier = lock_make_verifier(new_pw)
+        self._lock_save(salt=salt_hex, verifier=verifier, hint=hint)
+        self._lock_pw = new_pw
+        self._lock_refresh()
+        messagebox.showinfo(
+            "완료",
+            f"잠금 비밀번호를 {'변경' if has_pw else '설정'}했습니다."
+            f"{reenc}\n\n"
+            + ("힌트도 저장했습니다. 비밀번호를 입력할 때 표시됩니다."
+               if hint else
+               "힌트를 비워 두었습니다. '비밀번호를 잊었다면?'을 참고해 대비하세요."))
+
+    def show_lock_pw_help(self):
+        """비밀번호 분실 시 대처 방법을 정직하게 안내한다."""
+        messagebox.showinfo(
+            "비밀번호를 잊었다면",
+            "잠금은 AES-256 암호화라, 올바른 비밀번호가 없으면 아무도(이 프로그램을 "
+            "만든 사람도) 파일을 열 수 없습니다. 보안을 위해 비밀번호 자체는 어디에도 "
+            "저장하지 않습니다. 그래서 '분실한 비밀번호를 대신 찾아 주는' 기능은 "
+            "원리상 만들 수 없습니다.\n\n"
+            "대신 이렇게 대비하세요:\n\n"
+            "1) 비밀번호 힌트를 설정해 두세요. 비밀번호를 입력하는 창에 힌트가 "
+            "표시되어 기억을 돕습니다.\n"
+            "2) 비밀번호를 비밀번호 관리자(예: Bitwarden, 1Password)나 안전한 곳에 "
+            "따로 적어 두세요.\n"
+            "3) 아직 '잠금 OFF(열림)' 상태라면, 지금 한 번 '잠금 ON'으로 바꿔 보며 "
+            "비밀번호가 맞는지 확인해 두세요.\n\n"
+            "※ 이미 잠긴 파일의 비밀번호를 완전히 잊었다면 복구가 불가능합니다. "
+            "이 점이 곧 이 잠금이 안전하다는 뜻이기도 합니다.")
 
     def _lock_encrypt_all(self, pw, files):
         """아직 잠기지 않은 관리 항목(파일·폴더)을 모두 잠근다."""
@@ -1852,7 +1964,7 @@ class App:
         if files:
             self._lock_save(files=files)
         else:
-            self._lock_save(files=[], on=False, salt="", verifier="")
+            self._lock_save(files=[], on=False, salt="", verifier="", hint="")
             self._lock_pw = None
         self._lock_refresh()
 
@@ -1925,6 +2037,27 @@ class App:
         if hasattr(self, "lk_toggle_btn"):
             self.lk_toggle_btn.configure(
                 text=("잠금 OFF로" if on else "잠금 ON으로"))
+        # 비밀번호 설정 상태 / 힌트
+        has_pw = bool(st.get("verifier"))
+        if hasattr(self, "_lk_pw_lbl"):
+            self._lk_pw_lbl.configure(
+                text=("잠금 비밀번호:  설정됨" if has_pw
+                      else "잠금 비밀번호:  아직 설정 안 됨"),
+                text_color=(TEAL if has_pw else TEAL_SOFT))
+        if hasattr(self, "lk_pw_btn"):
+            self.lk_pw_btn.configure(text=("비밀번호 변경" if has_pw
+                                           else "비밀번호 설정"))
+        if hasattr(self, "_lk_hint_lbl"):
+            hint = st.get("hint", "")
+            if has_pw and hint:
+                self._lk_hint_lbl.configure(text=f"💡 힌트: {hint}")
+            elif has_pw:
+                self._lk_hint_lbl.configure(
+                    text="힌트가 없습니다. '비밀번호 변경'에서 힌트를 넣어 두면 "
+                         "분실에 대비할 수 있습니다.")
+            else:
+                self._lk_hint_lbl.configure(
+                    text="처음 잠글 때 또는 '비밀번호 설정'에서 비밀번호를 정합니다.")
         # 파일 목록
         if not self._lk_rows:
             return
