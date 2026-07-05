@@ -604,14 +604,20 @@ def lock_decrypt_to_temp(locked_path, password, is_dir=False):
 
 
 def find_files_with_word(root, word, recursive=False):
-    """root 아래에서 이름에 word 가 든 파일 경로 목록을 만든다(잠금 파일은 제외)."""
+    """root 아래에서 이름에 word 가 든 파일 경로 목록을 만든다(잠금 파일은 제외).
+
+    대소문자는 구분하지 않는다(동기화 제외 필터와 동일). 예: 'PI' 로 검색하면
+    api.txt, Pizza.png 처럼 대소문자가 다른 이름도 함께 찾는다.
+    """
     out = []
-    if not word:
+    wl = word.strip().lower()
+    if not wl:
         return out
     if recursive:
         for dp, _dn, fns in os.walk(root):
             for fn in sorted(fns):
-                if word in fn and not fn.endswith(LOCK_SUFFIX):
+                low = fn.lower()
+                if wl in low and not low.endswith(LOCK_SUFFIX):
                     out.append(os.path.join(dp, fn))
     else:
         try:
@@ -620,7 +626,8 @@ def find_files_with_word(root, word, recursive=False):
             return out
         for fn in names:
             p = os.path.join(root, fn)
-            if word in fn and not fn.endswith(LOCK_SUFFIX) and os.path.isfile(p):
+            low = fn.lower()
+            if wl in low and not low.endswith(LOCK_SUFFIX) and os.path.isfile(p):
                 out.append(p)
     return out
 
@@ -630,14 +637,17 @@ def find_folders_with_word(root, word, recursive=False):
 
     재귀 시 서로 겹치는(부모-자식) 폴더는 바깥쪽만 남긴다. 바깥 폴더를 통째로
     잠그면 그 안의 폴더도 함께 담기기 때문이다.
+
+    대소문자는 구분하지 않는다(동기화 제외 필터와 동일).
     """
     out = []
-    if not word:
+    wl = word.strip().lower()
+    if not wl:
         return out
     if recursive:
         for dp, dns, _fn in os.walk(root):
             for dn in sorted(dns):
-                if word in dn:
+                if wl in dn.lower():
                     out.append(os.path.join(dp, dn))
     else:
         try:
@@ -646,7 +656,7 @@ def find_folders_with_word(root, word, recursive=False):
             return out
         for dn in names:
             p = os.path.join(root, dn)
-            if word in dn and os.path.isdir(p):
+            if wl in dn.lower() and os.path.isdir(p):
                 out.append(p)
     # 겹치는 하위 폴더 제거(바깥쪽 우선)
     kept = []
