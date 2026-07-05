@@ -924,9 +924,12 @@ class App:
                                border_color=SHADOW, checkbox_width=20,
                                checkbox_height=20)
 
-    def _label(self, parent, text, font=None, fg=TEXT, bg=None):
-        return ctk.CTkLabel(parent, text=text, font=font or self.font_n,
-                            text_color=fg, fg_color="transparent")
+    def _label(self, parent, text, font=None, fg=TEXT, bg=None, wrap=None):
+        lbl = ctk.CTkLabel(parent, text=text, font=font or self.font_n,
+                           text_color=fg, fg_color="transparent")
+        if wrap:                       # 2단 컬럼 폭에 맞춰 긴 설명을 줄바꿈
+            lbl.configure(wraplength=wrap, justify="left")
+        return lbl
 
     # ---------------- UI 구성 ----------------
     def _build_ui(self):
@@ -1205,8 +1208,23 @@ class App:
                     fg=MUTED).grid(
             row=1, column=0, columnspan=3, sticky="w", padx=14, pady=(0, 11))
 
+        # 좌우 2단 구성으로 세로 길이를 줄인다: 왼쪽=이름 변경, 오른쪽=잠금.
+        # (대상 루트 폴더는 둘이 공유하므로 위에 전체 폭으로 둔다.)
+        cols = ctk.CTkFrame(body, fg_color="transparent")
+        cols.pack(fill="both", expand=True)
+        cols.grid_columnconfigure(0, weight=1, uniform="rncols")
+        cols.grid_columnconfigure(1, weight=1, uniform="rncols")
+        col_rn = ctk.CTkFrame(cols, fg_color="transparent")
+        col_rn.grid(row=0, column=0, sticky="new", padx=(0, 6))
+        col_lk = ctk.CTkFrame(cols, fg_color="transparent")
+        col_lk.grid(row=0, column=1, sticky="new", padx=(6, 0))
+
+        # ===== 왼쪽: 이름 일괄 변경 =====
+        self._label(col_rn, "이름 일괄 변경", font=self.font_b, fg=TEAL).pack(
+            anchor="w", pady=(0, 3))
+
         # 대상 종류 카드
-        c = self._card(body)
+        c = self._card(col_rn)
         self._label(c, "무엇의 이름을 바꿀까요?", font=self.font_b, fg=TEXT).pack(
             anchor="w", padx=14, pady=(10, 3))
         row = ctk.CTkFrame(c, fg_color="transparent")
@@ -1222,7 +1240,7 @@ class App:
             anchor="w", padx=14, pady=(0, 10))
 
         # 변경 방식 카드
-        c = self._card(body)
+        c = self._card(col_rn)
         c.grid_columnconfigure(0, weight=1)
         self._label(c, "변경 방식", font=self.font_b, fg=TEXT).grid(
             row=0, column=0, columnspan=4, sticky="w", padx=14, pady=(10, 3))
@@ -1250,7 +1268,7 @@ class App:
         self._entry(rrow, self.rn_replace, width=150).pack(side="left")
 
         # 실행 버튼
-        af = ctk.CTkFrame(body, fg_color="transparent")
+        af = ctk.CTkFrame(col_rn, fg_color="transparent")
         af.pack(fill="x", pady=(2, 6))
         self._button(af, "미리보기", self.rename_preview,
                      "실제로 바꾸기 전에 어떤 이름이 바뀔지 먼저 확인합니다",
@@ -1260,10 +1278,10 @@ class App:
             side="left", padx=(10, 0), fill="x", expand=True)
 
         # 결과/로그 카드
-        c = self._card(body, pady=(0, 0))
+        c = self._card(col_rn, pady=(0, 0))
         holder = ctk.CTkFrame(c, fg_color=INSET, corner_radius=10)
         holder.pack(fill="both", expand=True, padx=10, pady=10)
-        self.rn_log = tk.Text(holder, height=8, font=self.font_log, bg=INSET,
+        self.rn_log = tk.Text(holder, height=6, font=self.font_log, bg=INSET,
                               fg=LOG_TEXT, relief="flat", bd=0, highlightthickness=0,
                               wrap="none", state="disabled")
         self.rn_log.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=6)
@@ -1272,18 +1290,19 @@ class App:
         sb.pack(side="right", fill="y", pady=6, padx=(0, 4))
         self.rn_log.configure(yscrollcommand=sb.set)
 
-        # ----- 파일 일괄 잠금 -----
-        self._build_lock_ui(body)
+        # ===== 오른쪽: 파일·폴더 일괄 잠금 =====
+        self._build_lock_ui(col_lk)
 
     # ---------------- 파일/폴더 일괄 잠금 화면 ----------------
     def _build_lock_ui(self, body):
         # 구역 제목
         self._label(body, "특정 단어가 든 파일·폴더 일괄 잠금",
-                    font=self.font_b, fg=TEAL).pack(anchor="w", pady=(12, 2))
+                    font=self.font_b, fg=TEAL).pack(anchor="w", pady=(0, 3))
         self._label(body, "위에서 고른 '대상 루트 폴더'와 '재귀' 설정을 그대로 사용합니다. "
                           "잠근 것은 이름 뒤에 .locked.zip 이 붙는 AES 암호 ZIP 이 되어, "
                           "이 프로그램 없이도 무료 7-Zip·Keka 등으로 암호만 알면 풀 수 있습니다.",
-                    font=self.font_small, fg=MUTED).pack(anchor="w", pady=(0, 4))
+                    font=self.font_small, fg=MUTED, wrap=490).pack(
+            anchor="w", pady=(0, 4))
 
         # 대상 종류(파일/폴더) + 잠글 단어 + 실행
         c = self._card(body)
@@ -1316,21 +1335,21 @@ class App:
         self._label(c, "잠금 ON: 파일을 열 때마다 비밀번호가 필요합니다 · "
                        "잠금 OFF: 비밀번호 없이 바로 열 수 있습니다 "
                        "(OFF 로 바꾸려면 비밀번호 필요).",
-                    font=self.font_small, fg=MUTED).grid(
+                    font=self.font_small, fg=MUTED, wrap=470).grid(
             row=1, column=0, columnspan=2, sticky="w", padx=14, pady=(0, 11))
 
         # 받는 사람용 '여는 방법' 안내 파일 만들기
         c = self._card(body)
         c.grid_columnconfigure(0, weight=1)
         self._label(c, "전달받은 사람이 잠긴 파일을 여는 방법을 적은 안내 파일을 "
-                       "바탕화면에 만듭니다.", font=self.font_n, fg=TEXT).grid(
+                       "바탕화면에 만듭니다.", font=self.font_n, fg=TEXT, wrap=300).grid(
             row=0, column=0, sticky="w", padx=14, pady=(11, 2))
         self._button(c, "안내 파일 만들기", self.make_open_guide,
                      "'잠긴 파일 여는 방법.txt' 를 바탕화면에 만듭니다. 파일을 전달할 때 "
                      "함께 보내면 받는 사람이 헤매지 않습니다", primary=True,
                      width=140).grid(row=0, column=1, padx=(8, 14), pady=(11, 2))
         self._label(c, "비밀번호는 보안을 위해 안내 파일에 적지 않습니다(직접 알려주세요).",
-                    font=self.font_small, fg=MUTED).grid(
+                    font=self.font_small, fg=MUTED, wrap=470).grid(
             row=1, column=0, columnspan=2, sticky="w", padx=14, pady=(0, 11))
 
         # 잠금 관리 중인 파일 목록 (+ 이름 검색)
@@ -1357,10 +1376,10 @@ class App:
         self.page_sync.pack_forget()
         self.page_rename.pack(fill="both", expand=True)
         self.root.update_idletasks()
-        w = min(self.root.winfo_reqwidth(), 820)
+        w = min(self.root.winfo_reqwidth(), 1040)
         h = self.root.winfo_reqheight()
-        self.root.minsize(480, 420)
-        self.root.geometry(f"{max(w, 480)}x{h}")
+        self.root.minsize(720, 380)
+        self.root.geometry(f"{max(w, 720)}x{h}")
 
     def show_sync(self):
         self.page_rename.pack_forget()
