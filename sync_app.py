@@ -789,6 +789,8 @@ class App:
         # 잠금 대상: 파일·폴더를 각각 독립적으로 켤 수 있다(둘 다 선택 가능).
         self.lk_lock_file = tk.BooleanVar(value=True)   # 파일을 잠금 대상으로
         self.lk_lock_dir = tk.BooleanVar(value=False)   # 폴더(통째로)를 잠금 대상으로
+        # 잠금 전용 재귀: 켜면 하위 폴더 안까지 뒤져 이름에 단어가 든 것을 모두 찾는다.
+        self.lk_recursive = tk.BooleanVar(value=True)
         self.lk_search = tk.StringVar()                 # 잠금 목록 이름 검색어
         self._lock_pw = None                            # 이번 실행 동안 기억하는 비밀번호
         # 검색어가 바뀌면 목록을 즉시 다시 그린다
@@ -1308,13 +1310,14 @@ class App:
         # 구역 제목
         self._label(body, "특정 단어가 든 파일·폴더 일괄 잠금",
                     font=self.font_b, fg=TEAL).pack(anchor="w", pady=(0, 3))
-        self._label(body, "위에서 고른 '대상 루트 폴더'와 '재귀' 설정을 그대로 사용합니다. "
-                          "잠근 것은 이름 뒤에 .locked.zip 이 붙는 AES 암호 ZIP 이 되어, "
-                          "이 프로그램 없이도 무료 7-Zip·Keka 등으로 암호만 알면 풀 수 있습니다.",
+        self._label(body, "위에서 고른 '대상 루트 폴더'를 기준으로, 아래 '하위 폴더까지 "
+                          "포함'을 켜면 하위 폴더 안까지 뒤져 모두 찾습니다. 잠근 것은 이름 "
+                          "뒤에 .locked.zip 이 붙는 AES 암호 ZIP 이 되어, 이 프로그램 없이도 "
+                          "무료 7-Zip·Keka 등으로 암호만 알면 풀 수 있습니다.",
                     font=self.font_small, fg=MUTED, wrap=490).pack(
             anchor="w", pady=(0, 4))
 
-        # 대상 종류(파일/폴더) + 잠글 단어 + 실행
+        # 대상 종류(파일/폴더) + 재귀 + 잠글 단어 + 실행
         c = self._card(body)
         c.grid_columnconfigure(1, weight=1)
         trow = ctk.CTkFrame(c, fg_color="transparent")
@@ -1324,12 +1327,18 @@ class App:
         self._lock_check(trow, "파일", self.lk_lock_file).pack(side="left")
         self._lock_check(trow, "폴더(통째로)", self.lk_lock_dir).pack(
             side="left", padx=(18, 0))
-        self._label(c, "잠글 단어").grid(row=1, column=0, sticky="w",
+        ctk.CTkSwitch(c, text="하위 폴더 안까지 포함해서 찾기 (재귀)",
+                      variable=self.lk_recursive, font=self.font_n,
+                      text_color=TEXT, progress_color=TEAL, fg_color=SHADOW,
+                      button_color="#FFFFFF", button_hover_color=HILIGHT,
+                      switch_width=40, switch_height=20).grid(
+            row=1, column=0, columnspan=3, sticky="w", padx=14, pady=(2, 4))
+        self._label(c, "잠글 단어").grid(row=2, column=0, sticky="w",
                                        padx=(14, 8), pady=(4, 11))
-        self._entry(c, self.lk_word).grid(row=1, column=1, sticky="ew", pady=(4, 11))
+        self._entry(c, self.lk_word).grid(row=2, column=1, sticky="ew", pady=(4, 11))
         self._button(c, "일괄 잠금", self.lock_bulk,
                      "이름에 이 단어가 든 파일 또는 폴더를 비밀번호로 한 번에 잠급니다",
-                     primary=True, width=110).grid(row=1, column=2,
+                     primary=True, width=110).grid(row=2, column=2,
                                                    padx=(8, 14), pady=(4, 11))
 
         # 잠금 비밀번호 설정/변경 + 분실 대비
@@ -1803,7 +1812,7 @@ class App:
             return
         st = self._lock_state()
         already = {e["path"] for e in st["files"]}
-        recursive = self.rn_recursive.get()
+        recursive = self.lk_recursive.get()
         # 파일을 먼저, 폴더를 나중에 잠근다: 잠글 폴더 안에 잠글 파일이 있어도
         # 파일이 먼저 안전하게 잠긴 뒤 폴더가 통째로 묶이도록 순서를 보장한다.
         found, seen = [], set()
